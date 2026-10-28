@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问义树 · SemQuestTree</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0e1116; color: #d7dde6;
+    font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 13px 20px; border-bottom: 1px solid #232a36; background: #12161d; flex-shrink: 0;
+  }
+  .title { font-size: 17px; font-weight: 700; letter-spacing: 1px; }
+  .title .en { color: #5eead4; font-weight: 500; font-size: 13px; margin-left: 6px;
+    font-family: ui-monospace, Menlo, monospace; }
+  .tbl-name { font-size: 15px; font-weight: 700; color: #f2d38b;
+    font-family: ui-monospace, Menlo, monospace; }
+  .stats { color: #8b95a5; font-size: 12.5px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #treePanel { width: 46%; min-width: 400px; border-right: 1px solid #232a36;
+    overflow: auto; padding: 14px 12px 30px; }
+  #detailPanel { flex: 1; overflow: auto; padding: 18px 24px 40px; }
+  .panel-head { font-size: 12px; color: #8b95a5; padding: 0 8px 10px;
+    display: flex; justify-content: space-between; align-items: center; }
+  .panel-head .hint { color: #5b6472; }
+  .btn { background: #1a212c; border: 1px solid #2c3648; color: #9aa4b2;
+    border-radius: 6px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
+  .btn:hover { color: #d7dde6; border-color: #3a4658; }
+  .btn.primary { background: #173229; border-color: #245743; color: #5eead4; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+    padding: 5px 10px; border-radius: 7px; margin-bottom: 1px; }
+  .row:hover { background: #1a212c; }
+  .row.clickable { cursor: pointer; }
+  .row.selected { background: #1d2a3a; outline: 1px solid #2c4a63; }
+  .chev { width: 13px; flex-shrink: 0; color: #5eead4; font-size: 11px; }
+  .icon { font-size: 10px; color: #4d586a; width: 13px; flex-shrink: 0; }
+  .internal > .row > .icon { color: #5eead4; }
+  .leaf .icon { color: #e8b64c; }
+  .leaf.zero .icon { color: #4d586a; }
+  .name { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #c9d2de; }
+  .leaf .name { color: #f2d38b; }
+  .tag { font-size: 10px; padding: 0 6px; border-radius: 99px; background: #3a2d1a;
+    color: #e8b64c; border: 1px solid #57431f; }
+  .badge { font-size: 11px; min-width: 20px; text-align: center; padding: 0 6px;
+    border-radius: 99px; background: #173229; color: #5eead4;
+    border: 1px solid #245743; font-family: ui-monospace, Menlo, monospace; }
+  .badge.zero { background: transparent; color: #4d586a; border-color: #2a323f; }
+  .crit { flex-basis: 100%; font-size: 11.5px; color: #7c8698; padding-left: 33px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .empty { color: #5b6472; text-align: center; margin-top: 32vh; font-size: 14px; line-height: 2.1; }
+  .empty span { font-size: 12px; color: #454e5c; }
+  .loading, .error { color: #8b95a5; margin-top: 20px; }
+  .error { color: #ef7d7d; }
+  .d-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .d-name { font-family: ui-monospace, Menlo, monospace; font-size: 18px;
+    color: #f2d38b; font-weight: 700; }
+  .d-count { margin-left: auto; font-size: 12px; color: #5eead4; }
+  .crumbs { font-size: 12px; color: #8b95a5; margin-bottom: 14px; }
+  .crumb { font-family: ui-monospace, Menlo, monospace; }
+  .sep { margin: 0 7px; color: #454e5c; }
+  .d-crit { background: #12161d; border: 1px solid #232a36; border-radius: 8px;
+    padding: 10px 14px; font-size: 12.5px; color: #9aa4b2; margin-bottom: 18px; }
+  .d-crit div + div { margin-top: 4px; }
+  .d-sub { font-size: 12px; letter-spacing: 2px; color: #8b95a5; margin-bottom: 10px; }
+  .d-none { color: #5b6472; font-size: 13px; }
+  .doc { background: #12161d; border: 1px solid #232a36; border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 10px; }
+  .doc:hover { border-color: #354052; }
+  .doc-id { display: inline-block; font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px; color: #5eead4; background: #12241f;
+    border: 1px solid #245743; border-radius: 5px; padding: 0 7px; margin-bottom: 7px; }
+  .doc-content { font-size: 13.5px; color: #c9d2de; }
+  .menu { position: fixed; background: #161b24; border: 1px solid #2c3648;
+    border-radius: 8px; padding: 4px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .menu div { padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .menu div:hover { background: #1d2a3a; }
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center; z-index: 60; }
+  .dialog { background: #12161d; border: 1px solid #2c3648; border-radius: 12px;
+    padding: 20px 22px; width: 500px; }
+  .dialog h3 { font-size: 15px; color: #d7dde6; margin-bottom: 4px; }
+  .dialog h3 code { color: #5eead4; font-size: 14px; }
+  .dlg-note { font-size: 12px; color: #8b95a5; margin-bottom: 8px; line-height: 1.7; }
+  .dialog label { display: block; font-size: 12px; color: #8b95a5; margin: 10px 0 4px; }
+  .dialog input { width: 100%; background: #0e1116; border: 1px solid #2a323f;
+    border-radius: 6px; color: #d7dde6; padding: 7px 10px; font-size: 13px;
+    font-family: ui-monospace, Menlo, monospace; }
+  .dialog input:focus { outline: none; border-color: #245743; }
+  .dialog .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  .dialog .actions button { padding: 6px 18px; font-size: 13px; }
+  .toast { position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%);
+    background: #12241f; border: 1px solid #245743; color: #5eead4;
+    padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 70;
+    max-width: 80vw; }
+  .toast.err { background: #2a1414; border-color: #5c2323; color: #ef7d7d; }
+  .ctl { display: flex; align-items: center; gap: 6px; }
+  .ctl select, .ctl input {
+    background: #0e1116; border: 1px solid #2a323f; border-radius: 6px;
+    color: #d7dde6; padding: 4px 8px; font-size: 12px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .ctl select { max-width: 230px; }
+  .ctl input { width: 110px; }
+  .ctl select:focus, .ctl input:focus { outline: none; border-color: #245743; }
+  .tabs { display: flex; gap: 6px; padding: 0 8px 12px; }
+  .tab { background: transparent; border: 1px solid #2a323f; color: #8b95a5;
+    border-radius: 6px; padding: 3px 14px; font-size: 12.5px; cursor: pointer; }
+  .tab.active { background: #173229; border-color: #245743; color: #5eead4; }
+  .q-row { display: flex; gap: 8px; margin-bottom: 14px; }
+  .q-row input { flex: 1; background: #0e1116; border: 1px solid #2a323f; border-radius: 7px;
+    color: #d7dde6; padding: 8px 12px; font-size: 13px; }
+  .q-row input:focus { outline: none; border-color: #245743; }
+  .q-row textarea { flex: 1; background: #0e1116; border: 1px solid #2a323f; border-radius: 7px;
+    color: #d7dde6; padding: 8px 12px; font-size: 13px; resize: vertical; min-height: 66px;
+    font-family: inherit; line-height: 1.55; }
+  .q-row textarea:focus { outline: none; border-color: #245743; }
+  .q-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+  .q-modes .hint-dim { color: #5b6472; font-size: 11.5px; margin-left: 8px; }
+  .q-sub { font-size: 12px; letter-spacing: 2px; color: #8b95a5; margin: 16px 0 8px; }
+  .chip { display: inline-block; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
+    color: #f2d38b; background: #241d10; border: 1px solid #57431f; border-radius: 99px;
+    padding: 1px 10px; margin: 0 6px 6px 0; }
+  .q-rank { background: #12161d; border: 1px solid #232a36; border-radius: 10px;
+    padding: 11px 14px; margin-bottom: 8px; display: flex; gap: 12px; align-items: flex-start; }
+  .q-score { font-family: ui-monospace, Menlo, monospace; font-size: 15px; font-weight: 700;
+    color: #5eead4; background: #12241f; border: 1px solid #245743; border-radius: 8px;
+    min-width: 34px; text-align: center; padding: 2px 6px; flex-shrink: 0; }
+  .q-meta { font-size: 11px; color: #8b95a5; margin-top: 5px;
+    font-family: ui-monospace, Menlo, monospace; }
+  .q-step { font-size: 12px; color: #8b95a5; font-family: ui-monospace, Menlo, monospace;
+    padding: 3px 0; border-bottom: 1px dashed #1d2430; }
+  .q-step b { color: #5eead4; font-weight: 600; }
+  .dim { color: #5b6472; }
+  details.judge { margin-top: 14px; }
+  details.judge summary { cursor: pointer; font-size: 12px; color: #8b95a5; }
+  .q-none { color: #5b6472; font-size: 13px; }
+  .hstats { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .gate-lb { font-size: 12px; color: #8b95a5; display: flex; align-items: center; gap: 5px; }
+  .gate-lb input { width: 66px; background: #0e1116; border: 1px solid #2a323f;
+    border-radius: 6px; color: #5eead4; padding: 3px 6px; font-size: 12px; text-align: center;
+    font-family: ui-monospace, Menlo, monospace; }
+  .gate-lb input:focus { outline: none; border-color: #245743; }
+  .btn.danger { background: #2a1414; border-color: #5c2323; color: #ef7d7d; }
+  .btn.danger:hover { border-color: #7c3030; color: #ff9b9b; }
+
+  /* ── 开始页（全部表）────────────────────────────────────────── */
+  #startView { flex: 1; overflow: auto; padding: 22px 28px 60px; }
+  .start-sub { font-size: 12px; letter-spacing: 2px; color: #8b95a5; margin-bottom: 14px; }
+  .newtbl { background: #12161d; border: 1px solid #232a36; border-radius: 12px;
+    padding: 16px 18px; margin-bottom: 24px; }
+  .newtbl-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .newtbl input { background: #0e1116; border: 1px solid #2a323f; border-radius: 6px;
+    color: #d7dde6; padding: 7px 10px; font-size: 13px; }
+  .newtbl input:focus { outline: none; border-color: #245743; }
+  #nt-name { width: 230px; font-family: ui-monospace, Menlo, monospace; }
+  #nt-note { flex: 1; min-width: 200px; }
+  .mode-pick { display: flex; gap: 26px; margin: 12px 0 2px; }
+  .mode-opt { display: flex; align-items: center; gap: 6px; font-size: 13px;
+    color: #c9d2de; cursor: pointer; }
+  .mode-opt input { accent-color: #5eead4; width: auto; }
+  .mode-desc { font-size: 11.5px; color: #5b6472; margin-top: 7px; line-height: 1.7; }
+  .tip { display: inline-flex; width: 16px; height: 16px; border-radius: 50%;
+    border: 1px solid #2c3648; color: #8b95a5; font-size: 10.5px;
+    align-items: center; justify-content: center; cursor: help; position: relative; flex-shrink: 0; }
+  .tip:hover { color: #5eead4; border-color: #245743; }
+  .tip .tipbox { display: none; }
+  .tip:hover .tipbox { display: block; position: absolute; bottom: 24px; left: 50%;
+    transform: translateX(-50%); width: 300px; background: #161b24;
+    border: 1px solid #2c3648; border-radius: 8px; padding: 9px 12px; color: #c9d2de;
+    font-size: 11.5px; line-height: 1.75; z-index: 80; text-align: left;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 12px; }
+  .card { background: #12161d; border: 1px solid #232a36; border-radius: 12px;
+    padding: 14px 16px; cursor: pointer; transition: border-color .15s, background .15s; }
+  .card:hover { border-color: #2c4a63; background: #141a23; }
+  .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .card-name { font-size: 15px; font-weight: 700; color: #c9d2de;
+    font-family: ui-monospace, Menlo, monospace; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .mode-tag { font-size: 10px; padding: 0 7px; border-radius: 99px;
+    border: 1px solid; flex-shrink: 0; }
+  .mode-tag.noul { color: #5eead4; border-color: #245743; background: #173229; }
+  .mode-tag.choice { color: #e8b64c; border-color: #57431f; background: #3a2d1a; }
+  .card-note { font-size: 12px; color: #8b95a5; margin-top: 7px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px;
+    font-size: 11.5px; color: #5b6472; font-family: ui-monospace, Menlo, monospace; }
+  .card-edit, .card-del { margin-left: auto; background: transparent; border: none; color: #5b6472;
+    cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 5px;
+    font-family: inherit; }
+  .card-del { margin-left: 0; }
+  .card-edit:hover { color: #5eead4; background: #12241f; }
+  .card-del:hover { color: #ef7d7d; background: #2a1414; }
+  .start-empty { color: #5b6472; text-align: center; margin-top: 12vh;
+    font-size: 14px; line-height: 2.1; }
+  .start-empty span { font-size: 12px; color: #454e5c; }
+</style>
+</head>
+<body>
+<header>
+  <button class="btn" id="backBtn" style="display:none">‹ 全部表</button>
+  <div class="title">问义树<span class="en">SemQuestTree</span></div>
+  <span class="tbl-name" id="tblName" style="display:none"></span>
+  <span class="mode-tag" id="tblMode" style="display:none"></span>
+  <button class="btn" id="tblEdit" style="display:none" title="修改表名 / 备注">✎</button>
+  <div class="ctl">
+    <select id="provider" title="决策后端">
+      <option value="jev">jev</option>
+      <option value="openrouter">openrouter</option>
+      <option value="bailian">百炼</option>
+      <option value="mock">mock</option>
+    </select>
+    <input id="modelFilter" placeholder="筛模型…">
+    <select id="model" title="决策模型"></select>
+  </div>
+  <div class="hstats">
+    <span id="stats"></span>
+    <label class="gate-lb" id="gateLb" style="display:none" title="">
+      <span id="gateLbTxt">门控</span>
+      <input id="gate" type="number" min="0.05" max="1" step="0.05" value="0.7">
+    </label>
+  </div>
+</header>
+<main>
+  <section id="startView" style="display:none">
+    <div class="start-sub">全部表 · 一张表是一棵判据树</div>
+    <div class="newtbl">
+      <div class="newtbl-row">
+        <input id="nt-name" placeholder="表名（必填）">
+        <input id="nt-note" placeholder="备注（可选，显示在卡片上）">
+        <button class="btn primary" id="nt-go">新建表</button>
+      </div>
+      <div class="mode-pick">
+        <label class="mode-opt">
+          <input type="radio" name="nt-mode" value="noul" checked> noul 多选分支
+          <span class="tip">?<span class="tipbox"><b>noul · 多选分支 + 并发搜索</b><br>
+            每层把内容与各分支判据逐一比对（P(yes) 过门控），一份内容可同时命中多个分支；
+            检索时多路并发命中、按命中叶数排序。适合一条话术涉及多种诉求的场景。</span></span>
+        </label>
+        <label class="mode-opt">
+          <input type="radio" name="nt-mode" value="choice"> choice 单选分支
+          <span class="tip">?<span class="tipbox"><b>choice · 单选逐层下行</b><br>
+            每层一个问题，从全部选项（含兜底「以上都不符合」）中只挑一个胜出，沿单路径逐层下行；
+            胜出置信度低于采纳线（默认 0.6）落兜底。适合互斥分类场景。</span></span>
+        </label>
+      </div>
+      <div class="mode-desc" id="nt-mode-desc"></div>
+    </div>
+    <div id="tableGrid" class="grid"></div>
+    <div id="startEmpty" class="start-empty" style="display:none">
+      还没有表<br>
+      <span>用上方表单新建一张：命名 + 选分支方式（noul 多选 / choice 单选）</span>
+    </div>
+  </section>
+  <section id="treePanel" style="display:none">
+    <div class="panel-head">
+      <span class="hint">左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删节点</span>
+      <button class="btn" id="expandAll">全部展开</button>
+    </div>
+    <div id="tree"><div class="loading">加载中…</div></div>
+  </section>
+  <section id="detailPanel" style="display:none">
+    <div class="tabs">
+      <button class="tab active" data-tab="detail">节点详情</button>
+      <button class="tab" data-tab="quest">控制台</button>
+    </div>
+    <div id="tab-detail">
+      <div id="detailEmpty" class="empty">点击左侧任意节点<br>展示该节点的路径、判据与落位数据（内部节点含子节点列表）<br><span>未点击不显示任何内容</span></div>
+      <div id="detail" style="display:none"></div>
+    </div>
+    <div id="tab-quest" style="display:none">
+      <div class="q-modes">
+        <button class="tab active" data-mode="add">落位 add</button>
+        <button class="tab" data-mode="search">检索 search</button>
+        <span class="hint-dim" id="q-hint">Enter 落位 · Shift+Enter 换行</span>
+      </div>
+      <div class="q-row" id="q-id-row" style="display:none">
+        <input id="q-doc-id" placeholder="文档 ID（留空自动生成；同 ID 重落会替换旧落位）">
+      </div>
+      <div class="q-row">
+        <textarea id="q-input" rows="3"></textarea>
+        <button class="btn primary" id="q-go">落位</button>
+      </div>
+      <div id="q-out"></div>
+    </div>
+  </section>
+</main>
+<script>
+  const $ = sel => document.querySelector(sel);
+  const state = { tid: null, mode: 'noul',
+    expanded: new Set(), containers: {}, wraps: {}, selectedRow: null,
+    backend: '', gate: 0.7, choiceGate: 0.6, docCount: 0, tinfo: null,
+    allModels: [], modelSource: '', modelBarInit: false };
+
+  const T = () => '/api/t/' + state.tid;
+  const fmtScore = v => (typeof v === 'number' && !Number.isInteger(v)) ? v.toFixed(2) : String(v);
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g,
+      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  async function api(path) {
+    const r = await fetch(path);
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    return r.json();
+  }
+
+  async function apiPost(path, body) {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
+  }
+
+  // ── hash 路由：#/ 开始页 · #/t/<id> 表内视图 ────────────────────
+
+  function route() {
+    const m = (location.hash || '#/').match(/^#\/t\/([^/]+)$/);
+    if (m) openTable(decodeURIComponent(m[1]));
+    else showStart();
+  }
+  window.addEventListener('hashchange', route);
+
+  function showStart() {
+    state.tid = null;
+    state.tinfo = null;
+    $('#backBtn').style.display = 'none';
+    $('#tblName').style.display = 'none';
+    $('#tblMode').style.display = 'none';
+    $('#tblEdit').style.display = 'none';
+    $('#gateLb').style.display = 'none';
+    $('#stats').textContent = '';
+    $('#startView').style.display = '';
+    $('#treePanel').style.display = 'none';
+    $('#detailPanel').style.display = 'none';
+    document.title = '问义树 · SemQuestTree';
+    loadTables();
+  }
+
+  async function loadTables() {
+    try {
+      renderTables(await api('/api/tables'));
+    } catch (e) {
+      $('#tableGrid').innerHTML = '<div class="error">表清单加载失败: ' + esc(e) + '</div>';
+    }
+  }
+
+  function renderTables(list) {
+    const grid = $('#tableGrid');
+    $('#startEmpty').style.display = list.length ? 'none' : '';
+    grid.innerHTML = '';
+    for (const t of list) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML =
+        '<div class="card-head"><span class="card-name">' + esc(t.name) + '</span>' +
+        '<span class="mode-tag ' + esc(t.mode) + '">' + (t.mode === 'choice' ? 'choice 单选' : 'noul 多选') + '</span></div>' +
+        '<div class="card-note">' + (t.note ? esc(t.note) : '<span style="color:#454e5c">（无备注）</span>') + '</div>' +
+        '<div class="card-foot"><span>落位 ' + t.docCount + ' 条</span>' +
+        '<span>' + (t.createdAt ? new Date(t.createdAt).toLocaleDateString('zh-CN') : '') + '</span>' +
+        '<button class="card-edit">改名 / 备注</button>' +
+        '<button class="card-del">删表</button></div>';
+      card.onclick = () => { location.hash = '#/t/' + encodeURIComponent(t.id); };
+      card.querySelector('.card-edit').onclick = e => { e.stopPropagation(); openTableEditDialog(t, () => loadTables()); };
+      card.querySelector('.card-del').onclick = e => { e.stopPropagation(); confirmDeleteTable(t); };
+      grid.appendChild(card);
+    }
+  }
+
+  // 修改表名/备注（开始页卡片与表内头部共用）；onSaved 收到最新表元信息
+  function openTableEditDialog(t, onSaved) {
+    const ov = document.createElement('div');
+    ov.className = 'overlay';
+    ov.innerHTML =
+      '<div class="dialog">' +
+      '  <h3>修改表 <code>' + esc(t.name) + '</code></h3>' +
+      '  <div class="dlg-note">仅改表名与备注；模式（' + (t.mode === 'choice' ? 'choice 单选' : 'noul 多选') + '）建表时定死不可改。零模型调用，随表落盘。</div>' +
+      '  <label>表名</label>' +
+      '  <input id="et-name" value="' + esc(t.name) + '">' +
+      '  <label>备注（可留空）</label>' +
+      '  <input id="et-note" value="' + esc(t.note || '') + '">' +
+      '  <div class="actions"><button class="btn" id="et-cancel">取消</button>' +
+      '  <button class="btn primary" id="et-ok">保存</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    ov.querySelector('#et-cancel').onclick = () => ov.remove();
+    ov.querySelector('#et-ok').onclick = async () => {
+      const name = ov.querySelector('#et-name').value.trim();
+      const note = ov.querySelector('#et-note').value.trim();
+      if (!name) { toast('表名不可为空', true); return; }
+      const body = {};
+      if (name !== t.name) body.name = name;
+      if (note !== (t.note || '')) body.note = note;
+      if (!Object.keys(body).length) { ov.remove(); return; }
+      ov.querySelector('#et-ok').disabled = true;
+      try {
+        const r = await fetch('/api/tables?id=' + encodeURIComponent(t.id), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#et-ok').disabled = false; return; }
+        ov.remove();
+        toast('已修改表「' + out.name + '」' + (out.note ? '· ' + out.note : ''));
+        if (onSaved) onSaved(out);
+      } catch (e) {
+        toast('修改失败: ' + e, true);
+        ov.querySelector('#et-ok').disabled = false;
+      }
+    };
+  }
+
+  function confirmDeleteTable(t) {
+    const ov = document.createElement('div');
+    ov.className = 'overlay';
+    ov.innerHTML =
+      '<div class="dialog">' +
+      '  <h3>删除表 <code>' + esc(t.name) + '</code>？</h3>' +
+      '  <div class="dlg-note">将删除这棵树的全部结构、判据与落位数据（tables/' + esc(t.id) + '.json 一并移除），此操作不可撤销。</div>' +
+      '  <div class="actions"><button class="btn" id="dt-cancel">取消</button>' +
+      '  <button class="btn danger" id="dt-ok">删除</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    ov.querySelector('#dt-cancel').onclick = () => ov.remove();
+    ov.querySelector('#dt-ok').onclick = async () => {
+      ov.querySelector('#dt-ok').disabled = true;
+      try {
+        const r = await fetch('/api/tables?id=' + encodeURIComponent(t.id), { method: 'DELETE' });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#dt-ok').disabled = false; return; }
+        ov.remove();
+        toast('已删除表「' + t.name + '」');
+        loadTables();
+      } catch (e) {
+        toast('删表失败: ' + e, true);
+        ov.querySelector('#dt-ok').disabled = false;
+      }
+    };
+  }
+
+  // 新建表：命名 + 分支方式（noul/choice 建表时定死）+ 备注
+  const MODE_DESC = {
+    noul: '多选：每层逐分支比对 P(yes) 过门控，一份内容可多枝落位，检索多路并发命中（判据叶 = 多标签）。',
+    choice: '单选：每层一个问题只挑一个胜出选项，沿单路径逐层下行；置信度低于采纳线落兜底（判据 = 选项）。'
+  };
+  function syncModeDesc() {
+    const v = document.querySelector('input[name="nt-mode"]:checked').value;
+    $('#nt-mode-desc').textContent = MODE_DESC[v];
+  }
+  for (const r of document.querySelectorAll('input[name="nt-mode"]')) r.onchange = syncModeDesc;
+  syncModeDesc();
+
+  $('#nt-go').onclick = async () => {
+    const name = $('#nt-name').value.trim();
+    const mode = document.querySelector('input[name="nt-mode"]:checked').value;
+    const note = $('#nt-note').value.trim();
+    if (!name) { toast('请输入表名', true); return; }
+    $('#nt-go').disabled = true;
+    try {
+      const out = await apiPost('/api/tables', { name, mode, note });
+      $('#nt-name').value = ''; $('#nt-note').value = '';
+      toast('已建表「' + out.name + '」（' + out.mode + '）— 右键 ROOT 开始建分支');
+      location.hash = '#/t/' + encodeURIComponent(out.id);
+    } catch (e) {
+      toast('建表失败: ' + e, true);
+    }
+    $('#nt-go').disabled = false;
+  };
+
+  // ── 表内视图 ───────────────────────────────────────────────────
+
+  async function openTable(id) {
+    state.tid = id;
+    try {
+      const d = await api(T());   // 表元信息 + metaMap
+      state.mode = d.meta.mode;
+      state.gate = d.meta.noulGate;
+      state.choiceGate = d.meta.choiceGate;
+      state.docCount = d.docCount;
+      $('#tblName').textContent = d.name;
+      $('#tblName').title = d.note || d.name;
+      $('#tblName').style.display = '';
+      $('#tblEdit').style.display = '';
+      state.tinfo = d;
+      const mt = $('#tblMode');
+      mt.textContent = d.mode === 'choice' ? 'choice 单选' : 'noul 多选';
+      mt.className = 'mode-tag ' + d.mode;
+      mt.style.display = '';
+      $('#backBtn').style.display = '';
+      $('#startView').style.display = 'none';
+      $('#treePanel').style.display = '';
+      $('#detailPanel').style.display = '';
+      $('#gateLb').style.display = '';
+      document.title = d.name + ' · 问义树';
+      applyGateLabel();
+      renderStats(d.meta);
+      state.expanded = new Set();
+      state.containers = {};
+      state.wraps = {};
+      state.selectedRow = null;
+      $('#tree').innerHTML = '<div class="loading">加载中…</div>';
+      const nd = await api(T() + '/node');   // 初始只取根一层
+      $('#tree').innerHTML = '';
+      $('#tree').appendChild(buildRow(nd.node, 0));
+      $('#detailEmpty').style.display = '';
+      $('#detail').style.display = 'none';
+      showTab('detail');
+    } catch (e) {
+      toast('打开表失败: ' + e, true);
+      location.hash = '#/';
+    }
+  }
+  $('#backBtn').onclick = () => { location.hash = '#/'; };
+  $('#tblEdit').onclick = () => {
+    if (state.tinfo) openTableEditDialog(state.tinfo, out => {
+      state.tinfo = Object.assign({}, state.tinfo, out);
+      $('#tblName').textContent = out.name;
+      $('#tblName').title = out.note || out.name;
+      document.title = out.name + ' · 问义树';
+    });
+  };
+
+  function gateVal() { return state.mode === 'choice' ? state.choiceGate : state.gate; }
+
+  function applyGateLabel() {
+    const choice = state.mode === 'choice';
+    $('#gateLbTxt').textContent = choice ? '采纳线' : '门控';
+    $('#gateLb').title = choice
+        ? 'choice 采纳线 (0, 1]：单层胜出置信度低于此值落兜底'
+        : 'noul 绝对门控 (0, 1]，只影响其后的判定';
+    const g = $('#gate');
+    if (document.activeElement !== g) g.value = gateVal();
+  }
+
+  function renderStats(m) {
+    $('#stats').textContent = '落位 ' + m.docCount + ' 条';
+    if (state.mode === 'choice' && m.choiceGate != null) state.choiceGate = m.choiceGate;
+    if (m.noulGate != null) state.gate = m.noulGate;
+    const g = $('#gate');
+    if (document.activeElement !== g) g.value = gateVal();
+  }
+
+  $('#gate').addEventListener('change', async () => {
+    const v = parseFloat($('#gate').value);
+    const choice = state.mode === 'choice';
+    const label = choice ? '采纳线' : '门控';
+    if (!(v > 0 && v <= 1)) { toast(label + '须在 (0, 1] 区间', true); $('#gate').value = gateVal(); return; }
+    try {
+      const out = await apiPost(T() + '/gate', choice ? { choiceGate: v } : { noulGate: v });
+      if (choice) state.choiceGate = out.choiceGate; else state.gate = out.noulGate;
+      $('#gate').value = gateVal();
+      toast(label + '已调整为 ' + gateVal());
+    } catch (e) {
+      toast('调整失败: ' + e, true);
+      $('#gate').value = gateVal();
+    }
+  });
+
+  // ── 逐层展开树 ─────────────────────────────────────────────────
+
+  // 一行（图标+名+判据）+ 子容器；左键任意节点开右侧详情，内部节点同时展开/收起一层
+  function buildRow(node, depth) {
+    const wrap = document.createElement('div');
+    wrap.className = 'node ' + (node.leaf ? 'leaf' : 'internal') + (node.other ? ' other' : '');
+    state.wraps[node.name] = wrap;
+
+    const row = document.createElement('div');
+    row.className = 'row clickable' + (node.other ? ' other' : '') + (node.docCount ? '' : ' zero');
+    row.style.marginLeft = (depth * 18) + 'px';
+    row.dataset.name = node.name;
+    row.dataset.depth = depth;
+
+    const chev = document.createElement('span');
+    chev.className = 'chev';
+    if (!node.leaf) chev.textContent = state.expanded.has(node.name) ? '▾' : '▸';
+    row.appendChild(chev);
+
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.textContent = node.leaf ? '◇' : '◆';
+    row.appendChild(icon);
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = node.name;
+    row.appendChild(name);
+
+    if (node.other) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = state.mode === 'choice' ? '兜底选项' : '兜底';
+      row.appendChild(tag);
+    }
+    if (node.leaf) {
+      const badge = document.createElement('span');
+      badge.className = 'badge' + (node.docCount ? '' : ' zero');
+      badge.textContent = node.docCount;
+      badge.title = '落位条数';
+      row.appendChild(badge);
+    }
+    if (node.yes) {
+      const crit = document.createElement('div');
+      crit.className = 'crit';
+      crit.textContent = (state.mode === 'choice' ? '» ' : '✓ ') + node.yes;
+      if (node.no) crit.title = '✗ ' + node.no;
+      row.appendChild(crit);
+    }
+
+    row.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openMenu(e.clientX, e.clientY, node, row); };
+
+    if (node.leaf) {
+      row.onclick = () => selectNode(node.name, row);
+      wrap.appendChild(row);
+      return wrap;
+    }
+
+    row.onclick = () => { selectNode(node.name, row); toggleNode(node, row); };
+    wrap.appendChild(row);
+
+    const kids = document.createElement('div');
+    kids.className = 'kids';
+    wrap.appendChild(kids);
+    state.containers[node.name] = kids;
+
+    if (state.expanded.has(node.name)) {
+      if (node.children && node.children.length) {
+        for (const c of node.children) kids.appendChild(buildRow(c, depth + 1));
+      } else {
+        loadChildren(node.name, depth).catch(e => toast('加载失败: ' + e, true));
+      }
+    }
+    return wrap;
+  }
+
+  async function toggleNode(node, row) {
+    const kids = state.containers[node.name];
+    const chev = row.querySelector('.chev');
+    const depth = parseInt(row.dataset.depth, 10);
+    if (state.expanded.has(node.name)) {          // 再点收起
+      state.expanded.delete(node.name);
+      kids.innerHTML = '';
+      chev.textContent = '▸';
+      return;
+    }
+    state.expanded.add(node.name);                // 点一下查下一级
+    chev.textContent = '…';
+    try {
+      await loadChildren(node.name, depth);
+      chev.textContent = '▾';
+    } catch (e) {
+      state.expanded.delete(node.name);
+      chev.textContent = '▸';
+      toast('加载失败: ' + e, true);
+    }
+  }
+
+  async function loadChildren(name, depth) {
+    const d = await api(T() + '/node?name=' + encodeURIComponent(name));
+    const kids = state.containers[name];
+    if (!kids) return;
+    kids.innerHTML = '';
+    for (const c of (d.node.children || [])) kids.appendChild(buildRow(c, depth + 1));
+  }
+
+  // 增长/分化后原位重建该节点（叶→内部节点也能正确换行）
+  async function refreshNode(name) {
+    const wrap = state.wraps[name];
+    if (!wrap) return;
+    const depth = parseInt(wrap.querySelector('.row').dataset.depth, 10);
+    const d = await api(T() + '/node?name=' + encodeURIComponent(name));
+    state.expanded.add(name);
+    wrap.replaceWith(buildRow(d.node, depth));
+  }
+
+  $('#expandAll').onclick = async () => {
+    try {
+      const t = await api(T() + '/tree');
+      state.mode = t.mode;
+      applyGateLabel();
+      renderStats(t);
+      const acc = new Set();
+      (function collect(n) {
+        if (!n.leaf) { acc.add(n.name); (n.children || []).forEach(collect); }
+      })(t.root);
+      state.expanded = acc;
+      state.containers = {};
+      state.wraps = {};
+      const box = $('#tree');
+      box.innerHTML = '';
+      box.appendChild(buildRow(t.root, 0));
+    } catch (e) {
+      toast('加载失败: ' + e, true);
+    }
+  };
+
+  // ── 右键菜单 + 增加判断节点 ────────────────────────────────────
+
+  let menuEl = null;
+  function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+  document.addEventListener('click', closeMenu);
+
+  function openMenu(x, y, node, row) {
+    closeMenu();
+    if (node.other) {              // 兜底：随父节点连带管理
+      toast(state.mode === 'choice'
+          ? '兜底选项「以上都不符合」为系统固定项（参与归一化），不可直接编辑——如需调整请操作其父节点'
+          : '兜底叶不参与判定请求（无判据、不可改名）——如需调整请操作其父节点');
+      return;
+    }
+    menuEl = document.createElement('div');
+    menuEl.className = 'menu';
+    const editItem = () => {
+      const e = document.createElement('div');
+      e.textContent = state.mode === 'choice' ? '✎ 修改选项（名称 / 描述）' : '✎ 修改节点（name / yes / no）';
+      e.onclick = () => { closeMenu(); openEditDialog(node); };
+      menuEl.appendChild(e);
+    };
+    {
+      const item = document.createElement('div');
+      item.textContent = state.mode === 'choice' ? '＋ 增加选项（分支）' : '＋ 增加判断节点（jn）';
+      item.onclick = () => { closeMenu(); openDialog(node); };
+      menuEl.appendChild(item);
+      if (row.dataset.depth !== '0') {        // 根节点不可改不可删
+        editItem();
+        const del = document.createElement('div');
+        del.textContent = '－ 删除节点（含子树与落位数据）';
+        del.style.color = '#ef7d7d';
+        del.onclick = () => { closeMenu(); confirmDelete(node); };
+        menuEl.appendChild(del);
+      }
+    }
+    document.body.appendChild(menuEl);
+    const r = menuEl.getBoundingClientRect();
+    menuEl.style.left = Math.min(x, innerWidth - r.width - 8) + 'px';
+    menuEl.style.top = Math.min(y, innerHeight - r.height - 8) + 'px';
+  }
+
+  function openDialog(parentNode) {
+    const choice = state.mode === 'choice';
+    const scope = choice
+        ? (parentNode.leaf
+            ? '该叶将分化为本层的一个选项；父层相关存量按完整选项列表重判（每条 1 次请求），选中此项则迁入'
+            : '将在该层新增一个选项；父层兜底存量按完整选项列表重判（每条 1 次请求），选中此项则迁入')
+        : (parentNode.leaf
+            ? '该叶为叶子节点：将分化为判断节点，其全部存量逐条重判（每条 1 次请求），过门进新节点，其余进 ' + esc(parentNode.name) + '_OTHER'
+            : '将对其兜底叶 ' + esc(parentNode.name) + '_OTHER 的存量逐条重判（每条 1 次请求），过门迁入新节点');
+    const ov = document.createElement('div');
+    ov.className = 'overlay';
+    ov.innerHTML =
+      '<div class="dialog">' +
+      '  <h3>在 <code>' + esc(parentNode.name) + '</code> 下' + (choice ? '增加选项' : '增加判断节点') + '</h3>' +
+      '  <div class="dlg-note">' + scope + (choice ? '' : '。判据用中文事件级原子断言。') + '</div>' +
+      '  <label>' + (choice ? '选项名（新分支）' : '节点名 NAME') + '</label>' +
+      '  <input id="jn-name" placeholder="' + (choice ? '如 运费争议' : '如 定位异常') + '">' +
+      '  <label>' + (choice ? '选项描述（可选；留空用选项名本身）' : 'yes 判据（是侧原子断言）') + '</label>' +
+      '  <input id="jn-yes" placeholder="' + (choice ? '司机对运费金额、扣款或计价有异议…' : '司机报告系统定位错误或导航找不到入口…') + '">' +
+      (choice ? '' :
+      '  <label>no 判据（留空自动生成）</label>' +
+      '  <input id="jn-no" placeholder="">') +
+      '  <div class="actions"><button class="btn" id="jn-cancel">取消</button>' +
+      '  <button class="btn primary" id="jn-ok">创建</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    ov.querySelector('#jn-cancel').onclick = () => ov.remove();
+    const val = id => ov.querySelector('#' + id).value.trim();
+    ov.querySelector('#jn-ok').onclick = async () => {
+      const body = { parent: parentNode.name, name: val('jn-name'), yes: choice ? (val('jn-yes') || '') : val('jn-yes'), no: choice ? '' : (val('jn-no') || '') };
+      if (!body.name || (!choice && !body.yes)) { toast(choice ? '选项名必填' : '节点名与 yes 判据必填', true); return; }
+      ov.querySelector('#jn-ok').disabled = true;
+      try {
+        const rep = await fetch(T() + '/node', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const out = await rep.json().catch(() => ({}));
+        if (!rep.ok) { toast(out.error || ('HTTP ' + rep.status), true); ov.querySelector('#jn-ok').disabled = false; return; }
+        ov.remove();
+        const movedTxt = (out.moves || []).filter(m => m.moved)
+            .map(m => m.docId + ' ' + (+m.prob).toFixed(2)).join('、');
+        toast('已新增 ' + out.node + ' · 重判 ' + out.judged + ' 条' +
+              (movedTxt ? ' · 迁入: ' + movedTxt : ' · 无存量迁入'));
+        await refreshNode(parentNode.name);
+      } catch (e) {
+        toast('增长失败: ' + e, true);
+        ov.querySelector('#jn-ok').disabled = false;
+      }
+    };
+  }
+
+  // ── 修改节点（改名 + 改判据，零模型调用）──────────────────────
+
+  function renameKey(oldName, newName) {
+    if (state.expanded.has(oldName)) { state.expanded.delete(oldName); state.expanded.add(newName); }
+    if (state.containers[oldName]) { state.containers[newName] = state.containers[oldName]; delete state.containers[oldName]; }
+    if (state.wraps[oldName]) { state.wraps[newName] = state.wraps[oldName]; delete state.wraps[oldName]; }
+    const w = state.wraps[newName];
+    if (w) { const r = w.querySelector('.row'); if (r) r.dataset.name = newName; }
+  }
+
+  function openEditDialog(node) {
+    const choice = state.mode === 'choice';
+    const ov = document.createElement('div');
+    ov.className = 'overlay';
+    ov.innerHTML =
+      '<div class="dialog">' +
+      '  <h3>修改' + (choice ? '选项' : '节点') + ' <code>' + esc(node.name) + '</code></h3>' +
+      '  <div class="dlg-note">零模型调用。改名会连带重命名兜底叶并更新落位指针；改判据不重判已落位数据（后续落位/检索按新判据收正）。修改记录随快照持久化，重启自动回放。</div>' +
+      '  <label>' + (choice ? '选项名' : '节点名') + '</label>' +
+      '  <input id="ed-name" value="' + esc(node.name) + '">' +
+      '  <label>' + (choice ? '选项描述（可选；留空保持）' : 'yes 判据（是侧原子断言；留空不改）') + '</label>' +
+      '  <input id="ed-yes" value="' + esc(node.yes || '') + '">' +
+      (choice ? '' :
+      '  <label>no 判据（留空自动生成）</label>' +
+      '  <input id="ed-no" value="' + esc(node.no || '') + '">') +
+      '  <div class="actions"><button class="btn" id="ed-cancel">取消</button>' +
+      '  <button class="btn primary" id="ed-ok">保存</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    ov.querySelector('#ed-cancel').onclick = () => ov.remove();
+    const val = id => ov.querySelector('#' + id).value.trim();
+    ov.querySelector('#ed-ok').onclick = async () => {
+      const body = { name: node.name, newName: val('ed-name'), yes: choice ? (val('ed-yes') || '') : val('ed-yes'), no: choice ? null : (val('ed-no') || null) };
+      if (!body.newName) { toast('名称不可为空', true); return; }
+      ov.querySelector('#ed-ok').disabled = true;
+      try {
+        const r = await fetch(T() + '/node', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#ed-ok').disabled = false; return; }
+        ov.remove();
+        const renamed = out.newName !== out.oldName;
+        if (renamed) renameKey(out.oldName, out.newName);
+        toast('已修改 ' + out.newName + (renamed ? '（原 ' + out.oldName + '）' : ''));
+        if (out.parent) await refreshNode(out.parent);
+        if (state.selectedRow && !document.body.contains(state.selectedRow)) {
+          state.selectedRow = null;
+          $('#detail').style.display = 'none';
+          $('#detailEmpty').style.display = '';
+        }
+      } catch (e) {
+        toast('修改失败: ' + e, true);
+        ov.querySelector('#ed-ok').disabled = false;
+      }
+    };
+  }
+
+  // ── 删除节点（确认后删子树 + 清理落位）────────────────────────
+
+  function confirmDelete(node) {
+    const ov = document.createElement('div');
+    ov.className = 'overlay';
+    ov.innerHTML =
+      '<div class="dialog">' +
+      '  <h3>删除 <code>' + esc(node.name) + '</code>？</h3>' +
+      '  <div class="dlg-note">将同时删除其全部子节点（含兜底叶），并清理这些叶上的全部落位数据，此操作不可撤销。</div>' +
+      '  <div class="actions"><button class="btn" id="del-cancel">取消</button>' +
+      '  <button class="btn danger" id="del-ok">删除</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    ov.querySelector('#del-cancel').onclick = () => ov.remove();
+    ov.querySelector('#del-ok').onclick = async () => {
+      ov.querySelector('#del-ok').disabled = true;
+      try {
+        const r = await fetch(T() + '/node?name=' + encodeURIComponent(node.name), { method: 'DELETE' });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#del-ok').disabled = false; return; }
+        ov.remove();
+        const removed = out.removed || [];
+        for (const n of removed) {
+          state.expanded.delete(n);
+          delete state.containers[n];
+          delete state.wraps[n];
+        }
+        if (state.selectedRow && removed.includes(state.selectedRow.dataset.name)) {
+          state.selectedRow = null;
+          $('#detail').style.display = 'none';
+          $('#detailEmpty').style.display = '';
+        }
+        state.docCount = out.docCount;
+        renderStats(out);
+        toast('已删除 ' + node.name + ' · 移除 ' + removed.length + ' 个节点 · 清理 ' +
+              (out.docsRemoved || []).length + ' 条文档');
+        await refreshNode(out.parent);
+      } catch (e) {
+        toast('删除失败: ' + e, true);
+        ov.querySelector('#del-ok').disabled = false;
+      }
+    };
+  }
+
+  // ── 节点详情（叶与内部节点共用视图，不点不显示）────────────────
+
+  async function selectNode(name, rowEl) {
+    showTab('detail');
+    if (state.selectedRow) state.selectedRow.classList.remove('selected');
+    state.selectedRow = rowEl;
+    rowEl.classList.add('selected');
+
+    $('#detailEmpty').style.display = 'none';
+    const d = $('#detail');
+    d.style.display = 'block';
+    d.innerHTML = '<div class="loading">沿路径查询中…</div>';
+    try {
+      const info = await api(T() + '/leaf?name=' + encodeURIComponent(name));
+      renderDetail(info);
+    } catch (e) {
+      d.innerHTML = '<div class="error">' + esc(e) + '</div>';
+    }
+  }
+
+  function renderDetail(info) {
+    const isNode = !info.leaf;
+    const crumbs = info.path.map(p => '<span class="crumb">' + esc(p) + '</span>')
+        .join('<span class="sep">▸</span>');
+    let html =
+      '<div class="d-head"><span class="d-name">' + esc(info.name) + '</span>' +
+      (info.other ? '<span class="tag">' + (state.mode === 'choice' ? '兜底选项' : '兜底') + '</span>' : '') +
+      '<span class="d-count">' + (isNode ? '子树落位 ' + info.docTotal + ' 条' : info.docs.length + ' 条落位') + '</span></div>' +
+      '<div class="crumbs">' + crumbs + '</div>';
+    if (info.yes || info.no) {
+      html += '<div class="d-crit"><div>' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(info.yes) + '</div>' +
+              (state.mode === 'choice' ? '' : '<div>✗ ' + esc(info.no || '—') + '</div>') + '</div>';
+    } else if (info.other) {
+      html += '<div class="d-crit">' + (state.mode === 'choice'
+          ? '兜底选项「以上都不符合」：本层无选项胜出，或胜出置信度低于采纳线 ' + state.choiceGate + ' 时落位于此'
+          : '兜底叶不参与判定请求（无判据）——本层无真实判据过门时落位于此') + '</div>';
+    }
+    if (isNode) {
+      html += '<div class="d-sub">子节点 · ' + (info.children || []).length + '</div>';
+      for (const c of (info.children || [])) {
+        html += '<div class="row">' +
+            '<span class="icon" style="color:' + (c.leaf ? '#e8b64c' : '#5eead4') + '">' + (c.leaf ? '◇' : '◆') + '</span>' +
+            '<span class="name"' + (c.leaf ? ' style="color:#f2d38b"' : '') + '>' + esc(c.name) + '</span>' +
+            (c.other ? '<span class="tag">' + (state.mode === 'choice' ? '兜底选项' : '兜底') + '</span>' : '') +
+            (c.leaf ? '<span class="badge' + (c.docCount ? '' : ' zero') + '">' + c.docCount + '</span>' : '') +
+            (c.yes ? '<div class="crit">' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(c.yes) + '</div>' : '') +
+            '</div>';
+      }
+    } else {
+      html += '<div class="d-sub">落位数据</div>';
+      if (!info.docs.length) {
+        html += '<div class="d-none">（该叶暂无落位）</div>';
+      } else {
+        for (const doc of info.docs) {
+          html += '<div class="doc"><span class="doc-id">' + esc(doc.id) + '</span>' +
+                  '<div class="doc-content">' + esc(doc.content) + '</div></div>';
+        }
+      }
+    }
+    $('#detail').innerHTML = html;
+  }
+
+  let toastTimer = null;
+  function toast(msg, err) {
+    let t = document.getElementById('toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'toast';
+      t.className = 'toast';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.className = 'toast' + (err ? ' err' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.remove(), 4500);
+  }
+
+  // ── 右栏页签 ───────────────────────────────────────────────────
+
+  function showTab(name) {
+    for (const b of document.querySelectorAll('.tabs > .tab')) {
+      b.classList.toggle('active', b.dataset.tab === name);
+    }
+    $('#tab-detail').style.display = name === 'detail' ? '' : 'none';
+    $('#tab-quest').style.display = name === 'quest' ? '' : 'none';
+  }
+  for (const b of document.querySelectorAll('.tabs > .tab')) {
+    b.onclick = () => showTab(b.dataset.tab);
+  }
+
+  // ── 模型选择栏（全局后端/模型，对所有表生效）───────────────────
+
+  async function initModelBar() {
+    if (state.modelBarInit) return;
+    state.modelBarInit = true;
+    $('#provider').onchange = () => loadModels($('#provider').value, null);
+    $('#modelFilter').oninput = applyModelFilter;
+    $('#model').onchange = switchModel;
+    try {
+      const cur = await api('/api/model');
+      $('#provider').value = cur.provider;
+      await loadModels(cur.provider, cur.model);
+    } catch (e) { /* 选择栏维持空态，不影响表 */ }
+  }
+
+  async function loadModels(provider, current) {
+    const sel = $('#model');
+    sel.innerHTML = '<option value="">加载中…</option>';
+    try {
+      const d = await api('/api/models?provider=' + encodeURIComponent(provider));
+      state.allModels = d.models || [];
+      state.modelSource = d.source;
+      sel.innerHTML = '';
+      const ph = document.createElement('option');
+      ph.value = '';
+      ph.textContent = '— 选择模型 —';
+      sel.appendChild(ph);
+      for (const m of state.allModels) {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = m.id + (m.free ? ' ·免费' : '') + (m.decisions ? ' ⚡' : '');
+        sel.appendChild(o);
+      }
+      applyModelFilter();
+      // 只有页面初始恢复「当前活跃模型」才回显选中；切 provider 一律停在占位——
+      // 必须显式选一次模型（触发 change → POST /api/model）才真正热切换，
+      // 避免程序赋值不触发 change 造成的"看起来选了、实际后端没切"假象
+      if (current && [...sel.options].some(o => o.value === current)) sel.value = current;
+      if (d.source === 'fallback') toast('模型列表为静态候选（上游列表不可达或缺凭据）');
+    } catch (e) {
+      sel.innerHTML = '<option value="">列表不可用</option>';
+    }
+  }
+
+  function applyModelFilter() {
+    const kw = $('#modelFilter').value.trim().toLowerCase();
+    const sel = $('#model');
+    const cur = sel.value;
+    for (const o of sel.options) {
+      if (!kw) { o.style.display = ''; continue; }
+      const m = state.allModels.find(x => x.id === o.value) || {};
+      const hay = (o.value + ' ' + (m.name || '')).toLowerCase();
+      o.style.display = hay.includes(kw) ? '' : 'none';
+    }
+    if (kw && ![...sel.options].some(o => o.style.display === '' && o.value === cur)) {
+      const first = [...sel.options].find(o => o.style.display === '');
+      if (first) sel.value = first.value;
+    }
+  }
+
+  async function switchModel() {
+    const provider = $('#provider').value;
+    const model = $('#model').value;
+    if (!model) return;
+    $('#model').disabled = true;
+    try {
+      const out = await apiPost('/api/model', { provider, model });
+      state.backend = out.backend;
+      toast('已切换: ' + out.backend + ' · ' + out.model + '（对所有表生效）');
+    } catch (e) {
+      toast('切换失败: ' + e, true);
+      await loadModels(provider, null);
+    }
+    $('#model').disabled = false;
+  }
+
+  // ── 控制台（add 落位 / search 检索，文本触发）──────────────────
+
+  let consoleMode = 'add';
+  function setMode(m) {
+    consoleMode = m;
+    for (const b of document.querySelectorAll('#tab-quest .q-modes .tab')) {
+      b.classList.toggle('active', b.dataset.mode === m);
+    }
+    $('#q-id-row').style.display = m === 'add' ? '' : 'none';
+    $('#q-go').textContent = m === 'add' ? '落位' : '检索';
+    $('#q-hint').textContent = m === 'add' ? 'Enter 落位 · Shift+Enter 换行' : 'Enter 检索 · Shift+Enter 换行';
+    $('#q-input').placeholder = m === 'add'
+        ? (state.mode === 'choice'
+            ? '粘贴一条内容，按选项逐层单选下行落位（同 ID 重落替换旧落位）'
+            : '粘贴一条司机话术，按判据树落位（同 ID 重落替换旧落位）')
+        : '输入检索语句，如：哪些司机嫌运费太低不赚钱';
+  }
+  for (const b of document.querySelectorAll('#tab-quest .q-modes .tab')) {
+    b.onclick = () => setMode(b.dataset.mode);
+  }
+
+  async function runConsole() {
+    const text = $('#q-input').value.trim();
+    if (!text) { toast(consoleMode === 'add' ? '请输入内容正文' : '请输入检索语句', true); return; }
+    const out = $('#q-out');
+    out.innerHTML = '<div class="loading">' + (consoleMode === 'add' ? '逐层判定落位中…' : '逐层判定中…') + '</div>';
+    try {
+      if (consoleMode === 'add') {
+        const body = { content: text };
+        const idv = $('#q-doc-id').value.trim();
+        if (idv) body.id = idv;
+        renderAdd(await apiPost(T() + '/add', body));
+      } else {
+        renderQuest(await apiPost(T() + '/quest', { query: text }));
+      }
+    } catch (e) {
+      out.innerHTML = '<div class="error">' + esc(e) + '</div>';
+    }
+  }
+  $('#q-go').onclick = runConsole;
+  $('#q-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runConsole(); }
+  });
+
+  // 判定轨迹一步：choice 模式显示胜出选项与置信度，noul 模式显示各分支 P(yes)
+  function stepLine(s) {
+    if (s.choice != null) {
+      let t = '✓ ' + esc(s.choice) + ' · 置信度 ' + (s.confidence != null ? (+s.confidence).toFixed(2) : '—');
+      const pk = Object.keys(s.probs || {});
+      if (pk.length > 1) {
+        t += ' <span class="dim">· ' + esc(pk.map(k => k + ' ' + (s.probs[k] == null ? '—' : (+s.probs[k]).toFixed(2))).join(' · ')) + '</span>';
+      }
+      return t;
+    }
+    return esc(Object.keys(s.probs || {})
+        .map(k => k + ' ' + (s.probs[k] == null ? '—' : (+s.probs[k]).toFixed(2))).join(' · '));
+  }
+
+  function renderAdd(d) {
+    let html = '<div class="q-sub">落位完成 · ' + esc(d.id) + '</div>';
+    html += d.leaves.length
+        ? '<div>' + d.leaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
+        : '<div class="q-none">（无叶名——异常，正常应至少落兜底' + (state.mode === 'choice' ? '选项' : '叶') + '）</div>';
+    html += '<details class="judge"><summary>判定轨迹（' + d.steps.length + ' 次请求）</summary>';
+    for (const s of d.steps) {
+      html += '<div class="q-step"><b>@' + esc(s.node) + '</b> ' + stepLine(s) +
+          ' <span class="dim">[' + s.latencyMs + 'ms · in ' + s.inputTokens + ' / out ' + s.outputTokens + ']</span></div>';
+    }
+    html += '</details><div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
+    $('#q-out').innerHTML = html;
+    renderStats(d);
+    for (const lf of d.leaves) {          // 已展开的落位叶原位刷新计数
+      if (state.wraps[lf]) refreshNode(lf).catch(() => {});
+    }
+  }
+
+  async function runQuest() {
+    const q = $('#q-input').value.trim();
+    if (!q) { toast('请输入查询语句', true); return; }
+    const out = $('#q-out');
+    out.innerHTML = '<div class="loading">逐层判定中…</div>';
+    try {
+      renderQuest(await apiPost(T() + '/quest', { query: q }));
+    } catch (e) {
+      out.innerHTML = '<div class="error">' + esc(e) + '</div>';
+    }
+  }
+
+  function renderQuest(d) {
+    let html = '<div class="q-sub">命中叶 · ' + (d.matchedLeaves.length || '无') + '</div>';
+    html += d.matchedLeaves.length
+        ? '<div>' + d.matchedLeaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
+        : '<div class="q-none">' + (state.mode === 'choice'
+            ? '没有命中（choice 单路径下行：途中置信度低于采纳线 ' + state.choiceGate + ' 或落兜底即止）'
+            : '没有叶过门（沿途 P(yes) 均低于门控 ' + state.gate + '）') + '</div>';
+    html += '<div class="q-sub">排序文档 · ' + d.ranked.length +
+        (state.mode === 'choice' ? '（分数 = 路径各层胜出概率连乘）' : '（分数 = 命中叶数）') + '</div>';
+    html += d.ranked.length
+        ? d.ranked.map(r =>
+            '<div class="q-rank"><span class="q-score">' + esc(fmtScore(r.score)) + '</span>' +
+            '<div style="min-width:0"><span class="doc-id">' + esc(r.docId) + '</span>' +
+            '<div class="doc-content">' + esc(r.content || '') + '</div>' +
+            '<div class="q-meta">via ' + (r.viaLeaves || []).map(esc).join(' + ') + '</div></div></div>').join('')
+        : '<div class="q-none">（无命中文档）</div>';
+    html += '<details class="judge"><summary>判定轨迹（' + d.steps.length + ' 次请求）</summary>';
+    for (const s of d.steps) {
+      html += '<div class="q-step"><b>@' + esc(s.node) + '</b> ' + stepLine(s) +
+          ' <span class="dim">[' + s.latencyMs + 'ms · in ' + s.inputTokens + ' / out ' + s.outputTokens + ']</span></div>';
+    }
+    html += '</details><div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
+    $('#q-out').innerHTML = html;
+  }
+
+  route();
+  initModelBar();
+</script>
+</body>
+</html>

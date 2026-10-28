@@ -1,0 +1,47 @@
+# ============================================================
+#  问义树 SemQuestTree 配置模板
+#  复制本文件为 semquest.properties 再填值（真实凭据文件已被 .gitignore 排除，不入库）
+#  优先级：JVM 系统属性(-Dsemquest.KEY=...) > 本文件 > 代码内默认
+# ============================================================
+
+# 决策后端: mock | jev | openrouter | bailian
+# mock = 零凭据确定性后端（纯关键词匹配，仅供体验 / 演示 / 测试，零 token）
+# 真实语义判定请切 jev 或 openrouter 并填对应 apikey
+backend=mock
+
+# noul 门控（P(yes) >= noulGate 视为通过）；choice 表用 choiceGate 采纳线。
+# 两者热载：保存即应用到对应模式的全部表
+noulGate=0.7
+choiceGate=0.6
+
+# 预制层级分支 schema（类似建表的字段声明）
+schema=driver-intent-schema.json
+
+# 单请求超时（毫秒）
+timeoutMs=30000
+
+# ── jev（TypeSafe SystemOne，主传感器）─────────────────────
+jev.baseUrl=https://api.typesafe.ai
+jev.model=jev-1.13.0
+jev.apikey=your-jev-api-key
+
+# ── OpenRouter ──────────────────────
+openrouter.url=https://openrouter.ai/api/alpha/decisions
+openrouter.model=baseten/mammoth-1:free
+openrouter.apikey=your-openrouter-api-key
+
+# ── 可视化服务（SemQuestServer）──────────────────────────
+server.port=8787
+server.data=tree-data.json
+server.viz=viz.html
+
+# ── 阿里云百炼 ──────────────────
+# 端点因部署而异（含个人工作区 ID），请从控制台获取
+bailian.url=your-bailian-endpoint-url
+bailian.model=decision-model-preview
+bailian.apikey=your-bailian-api-key
+
+# ── 手动模型清单（逗号分隔；配置即清单优先生效，保存即热载；留空回上游实时拉取）──
+jev.models=jev-1.13.0,jev-latest
+openrouter.models=
+bailian.models=decision-model-preview

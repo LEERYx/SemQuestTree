@@ -1,0 +1,206 @@
+{
+  "name": "driver-intent",
+  "gate": 0.7,
+
+  "ruleAdd": "The content field is one utterance spoken by a truck driver in a road freight scenario. Each question below describes one driver intent. Judge every question independently: does the utterance express that intent? Multiple intents may hold at the same time.",
+  "ruleSearch": "The content field is a natural-language search request over a database of truck driver utterances. Each question below describes one intent category. Judge every question independently: does the request ask for utterances expressing that intent? Multiple intents may hold at the same time.",
+
+  "otherYes": "The content expresses some demand or intent that none of the other questions in this group covers.",
+  "otherNo": "Every demand or intent expressed in the content is covered by the other questions in this group.",
+
+  "root": {
+    "name": "ROOT",
+    "children": [
+      {
+        "name": "PRICE",
+        "yes": "The utterance is mainly about money: freight price, driver pay, or payment settlement.",
+        "no": "The utterance is not mainly about money, freight price, or payment settlement.",
+        "children": [
+          {
+            "name": "HIGHER_PAY",
+            "yes": "The driver asks for a higher freight rate or extra payment for this order.",
+            "no": "The driver does not ask for a higher freight rate or extra payment."
+          },
+          {
+            "name": "LOW_RATE",
+            "yes": "The driver complains that the freight rate is too low or that the trip loses money.",
+            "no": "The driver does not complain that the rate is too low or the trip loses money."
+          },
+          {
+            "name": "PAYMENT_TERMS",
+            "yes": "The driver talks about unpaid freight, settlement, deposit, or when the payment arrives.",
+            "no": "The driver does not talk about unpaid freight, settlement, deposit, or payment timing."
+          }
+        ]
+      },
+      {
+        "name": "CARGO",
+        "yes": "The utterance is mainly about cargo: loading, load quantity, or cargo condition.",
+        "no": "The utterance is not mainly about cargo, loading, or cargo condition.",
+        "children": [
+          {
+            "name": "REDUCE_LOAD",
+            "yes": "The driver says he will load less than the full cargo or refuses to take part of the cargo.",
+            "no": "The driver does not refuse or reduce any part of the cargo."
+          },
+          {
+            "name": "CARGO_DAMAGE",
+            "yes": "The driver reports damaged cargo or asks for compensation for damaged goods.",
+            "no": "The driver does not report damaged cargo or claim damage compensation."
+          },
+          {
+            "name": "LOADING",
+            "yes": "The driver talks about loading or unloading work, its responsibility, or its fees.",
+            "no": "The driver does not talk about loading or unloading work, responsibility, or fees."
+          }
+        ]
+      },
+      {
+        "name": "SCHEDULE",
+        "yes": "The utterance is mainly about delivery time, lateness, or order fulfillment.",
+        "no": "The utterance is not mainly about delivery time, lateness, or order fulfillment.",
+        "children": [
+          {
+            "name": "LATE_DELIVERY",
+            "yes": "The driver warns that the delivery will arrive late or asks others to accept a delay.",
+            "no": "The driver does not warn about any delay in delivery."
+          },
+          {
+            "name": "CANCEL_ORDER",
+            "yes": "The driver wants to cancel this order or refuses to take this trip.",
+            "no": "The driver does not want to cancel the order or refuse the trip."
+          },
+          {
+            "name": "DEADHEAD",
+            "yes": "The driver asks for compensation for an empty return trip or deadhead miles.",
+            "no": "The driver does not ask for compensation for an empty return trip."
+          }
+        ]
+      },
+      {
+        "name": "SERVICE",
+        "yes": "The utterance is mainly about people: their attitude, service quality, or an evaluation of them.",
+        "no": "The utterance is not mainly about people, their attitude, or service quality.",
+        "children": [
+          {
+            "name": "COMPLAINT",
+            "yes": "The driver complains about a person, a dispatcher, or the service.",
+            "no": "The driver does not complain about any person or the service."
+          },
+          {
+            "name": "PRAISE",
+            "yes": "The driver praises a person or the service.",
+            "no": "The driver does not praise any person or the service."
+          }
+        ]
+      },
+      {
+        "name": "中文话术筛选",
+        "ruleAdd": "这条内容是一句公路货运场景里司机或货主说出的话术。下面每个问题描述一种意图，请对每个问题独立判断：这句话术是否表达了该意图？多个意图可以同时成立。",
+        "ruleSearch": "这条内容是对公路货运司机话术库的一次自然语言检索请求。下面每个问题描述一类意图，请对每个问题独立判断：该请求是否在找表达了这类意图的话术？多个意图可以同时成立。",
+        "yes": "这条内容用中文表达，且是道路货运场景里司机或货主的一句话术，或是对这类话术的检索请求。",
+        "no": "这条内容不是中文的道路货运场景话术，也不是对这类话术的检索请求。",
+        "children": [
+          {
+            "name": "运费价格",
+            "yes": "这条话术主要在谈钱：运费价格、司机工钱或运费结算。",
+            "no": "这条话术没有主要在谈钱、运费价格或运费结算。",
+            "children": [
+              {
+                "name": "要求涨价",
+                "yes": "司机要求提高这一单的运费，或追加额外费用。",
+                "no": "司机没有要求提高运费，也没有追加额外费用。"
+              },
+              {
+                "name": "嫌运费低",
+                "yes": "司机抱怨运费太低、这一趟不赚钱或亏本。",
+                "no": "司机没有抱怨运费低、不赚钱或亏本。"
+              },
+              {
+                "name": "讨要运费",
+                "yes": "司机在讨要未结算的运费，或在谈运费到账时间、定金或结算方式。",
+                "no": "司机没有讨要运费，也没有谈到账时间、定金或结算方式。"
+              },
+              {
+                "name": "空驶补贴",
+                "yes": "司机为空车返程或放空里程索要补贴或报销。",
+                "no": "司机没有为空驶里程索要补贴或报销。"
+              }
+            ]
+          },
+          {
+            "name": "货物装卸",
+            "yes": "这条话术主要在谈货物：装卸货、拉多少货或货物状况。",
+            "no": "这条话术没有主要在谈货物、装卸货或货物状况。",
+            "children": [
+              {
+                "name": "减少拉货",
+                "yes": "司机说这一单要少拉一部分货，或拒绝拉其中一部分。",
+                "no": "司机没有要少拉货，也没有拒拉部分货物。"
+              },
+              {
+                "name": "货物破损",
+                "yes": "司机报告货物破损变形，或为破损货物索要赔偿。",
+                "no": "司机没有报告货物破损，也没有为破损索要赔偿。"
+              },
+              {
+                "name": "装卸责任",
+                "yes": "司机在谈装卸的活谁干、装卸费谁出。",
+                "no": "司机没有在谈装卸的活或装卸费的分担。"
+              }
+            ]
+          },
+          {
+            "name": "时效履约",
+            "yes": "这条话术主要在谈送货时间：晚点、取消或装货安排。",
+            "no": "这条话术没有主要在谈送货时间、晚点或履约安排。",
+            "children": [
+              {
+                "name": "延迟送达",
+                "yes": "司机说这一单会晚到，或请收货方接受延迟。",
+                "no": "司机没有说会晚到，也没有请对方接受延迟。"
+              },
+              {
+                "name": "取消订单",
+                "yes": "司机想取消这一单，或拒绝接这一趟。",
+                "no": "司机没有想取消订单，也没有拒接这一趟。"
+              },
+              {
+                "name": "约装货时间",
+                "yes": "司机在约定或修改装货、到厂的具体时间安排。",
+                "no": "司机没有在约定或修改装货、到厂时间。"
+              },
+              {
+                "name": "路况延误",
+                "yes": "司机报告堵车、封路、天气等路况造成的行程延误。",
+                "no": "司机没有报告路况或天气造成的行程延误。"
+              }
+            ]
+          },
+          {
+            "name": "服务互动",
+            "yes": "这条话术主要在谈人：对方态度、服务质量或对人的评价。",
+            "no": "这条话术没有主要在谈人的态度、服务质量或对人的评价。",
+            "children": [
+              {
+                "name": "投诉抱怨",
+                "yes": "司机在抱怨或投诉某个人、调度或平台服务。",
+                "no": "司机没有抱怨或投诉任何人或服务。"
+              },
+              {
+                "name": "表扬感谢",
+                "yes": "司机在表扬或感谢某个人或服务。",
+                "no": "司机没有表扬或感谢任何人或服务。"
+              },
+              {
+                "name": "联系沟通",
+                "yes": "司机要求对方联系自己，或在谈电话打不通、消息没人回这类沟通问题。",
+                "no": "司机没有要求联系，也没有谈电话或消息沟通问题。"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
