@@ -18,9 +18,10 @@ import java.util.Map;
  * 全部方法走 HTTP 调 SemQuestServer（默认 http://localhost:8787），
  * 决策模型凭据只存在于服务端 semquest.properties，客户端无需任何 key。</p>
  *
- * <p>main() 是完整演示：建表 → 加分支 → 落位 → 检索 → 调门控 → 删表。
- * 注意 add/quest 会对服务端当前后端发起真实判定请求（约 6 次）；
- * 想零成本跑演示，先在页面头部把后端切到 mock，或用 backend=mock 起一个临时服务。</p>
+ * <p>main() 两种模式：无参=完整演示（建表 → 落位 → 检索 → 调门控 → 删表，结束自清理）；
+ * 带 seed 参数=建 README 示例表 Driver Intents（与 docs/demo-en.gif 完全一致）并保留。
+ * 两种模式都会对服务端当前后端发起真实判定请求（落位+检索约 19 次，建分支零判定）；
+ * 想零成本跑，先在页面头部把后端切到 mock，或用 backend=mock 起一个临时服务。</p>
  *
  * <p>端点入出参详见 docs/API.md。</p>
  */
@@ -220,43 +221,31 @@ public final class SemQuestClient {
         return URLEncoder.encode(s, "UTF-8");
     }
 
-    // ── 演示 ────────────────────────────────────────────────────────
+    // ── 演示 / 英文示例表 ────────────────────────────────────────────
 
-    /** 用法：java -cp target/classes org.example.SemQuestClient [baseUrl] */
-    @SuppressWarnings("unchecked")
+    private static final String DEMO_TABLE = "Driver Intents";
+
+    /**
+     * 用法：
+     * <pre>
+     *   java -cp target/classes org.example.SemQuestClient            # 演示（建表→落位→检索→调门控→删表）
+     *   java -cp target/classes org.example.SemQuestClient seed       # 建 README 示例表 Driver Intents 并保留
+     *   java -cp target/classes org.example.SemQuestClient seed http://localhost:8790
+     * </pre>
+     * 两种模式都会对当前后端发起真实判定（seed 建表零判定，落位+检索约 19 次请求）；
+     * 零成本跑请先把后端切到 mock。
+     */
     public static void main(String[] args) throws IOException {
-        String base = args.length > 0 ? args[0] : "http://localhost:8787";
+        boolean seed = args.length > 0 && "seed".equals(args[0]);
+        String base = args.length > (seed ? 1 : 0) ? args[seed ? 1 : 0] : "http://localhost:8787";
         SemQuestClient c = new SemQuestClient(base);
-        System.out.println("SemQuestTree 客户端演示 → " + base
-                + "（add/quest 会对当前后端发起真实判定，约 6 次请求；零成本演示请先把后端切到 mock）");
+        System.out.println("SemQuestTree 客户端 → " + base
+                + "（对当前后端发起真实判定；零成本请先切 mock 后端）");
 
-        // 表名固定，先清掉上一次的演示表，保证可重复运行
-        String name = "客户端演示";
-        for (Map<String, Object> t : c.listTables()) {
-            if (name.equals(t.get("name"))) {
-                c.deleteTable(String.valueOf(t.get("id")));
-                System.out.println("清掉上次演示表: " + t.get("id"));
-            }
-        }
+        String id = seedDriverIntents(c);
 
-        // 1. 建表（noul 多选分支）
-        Map<String, Object> t = c.createTable(name, "noul", "由 SemQuestClient.main 自动创建");
-        String id = String.valueOf(t.get("id"));
-        System.out.println("建表: 「" + name + "」 mode=" + t.get("mode") + " → " + id);
-
-        // 2. 加分支（判据用事件级原子断言；分支名含正文关键词，mock 后端按名子串匹配也能命中）
-        c.addNode(id, "ROOT", "退钱", "用户明确要求退钱、退款或退货", "");
-        c.addNode(id, "ROOT", "发货", "用户催促尽快发货或催查物流进度", "");
-        System.out.println("已加分支: 退钱 / 发货");
-
-        // 3. 落位
-        Map<String, Object> a1 = c.add(id, "我要退钱，不然就去投诉你们", "Z-001");
-        System.out.println("落位 Z-001 → " + a1.get("leaves"));
-        Map<String, Object> a2 = c.add(id, "三天了还没发货，到底什么时候发？", "Z-002");
-        System.out.println("落位 Z-002 → " + a2.get("leaves"));
-
-        // 4. 检索
-        Map<String, Object> rep = c.quest(id, "有没有人要求退钱的");
+        // 检索：README/GIF 同款多标签查询 → 双叶命中
+        Map<String, Object> rep = c.quest(id, "driver says the Fare is unpaid and the Cargo arrived damaged");
         System.out.println("检索: 「" + rep.get("query") + "」 命中叶=" + rep.get("matchedLeaves"));
         for (Object o : (List<Object>) rep.get("ranked")) {
             Map<String, Object> d = (Map<String, Object>) o;
@@ -264,13 +253,68 @@ public final class SemQuestClient {
                     + " via=" + d.get("viaLeaves") + " 正文=" + d.get("content"));
         }
 
-        // 5. 调门控并看当前模型
-        c.setNoulGate(id, 0.6);
-        System.out.println("门控已调 0.6; 当前模型=" + c.currentModel().get("provider")
-                + "/" + c.currentModel().get("model"));
+        if (seed) {
+            System.out.println("示例表已保留。打开 " + base + "/#/t/" + id + " 查看（同名表重跑即重建）。");
+        } else {
+            // 调门控演示 + 清理
+            c.setNoulGate(id, 0.6);
+            System.out.println("门控已调 0.6; 当前模型=" + c.currentModel().get("provider")
+                    + "/" + c.currentModel().get("model"));
+            c.deleteTable(id);
+            System.out.println("演示完成，临时表已删除。要保留这张表请改用 seed 参数："
+                    + "java -cp target/classes org.example.SemQuestClient seed");
+        }
+    }
 
-        // 6. 清理
-        c.deleteTable(id);
-        System.out.println("演示完成，临时表已删除。拷 SemQuestClient.java + Json.java 进你的后端即可调用以上全部方法。");
+    /** 建/重建 README 示例表 Driver Intents（判据与语料与 docs/demo-en.gif 完全一致），返回表 id。 */
+    public static String seedDriverIntents(SemQuestClient c) throws IOException {
+        for (Map<String, Object> t : c.listTables()) {
+            if (DEMO_TABLE.equals(t.get("name"))) {
+                c.deleteTable(String.valueOf(t.get("id")));
+                System.out.println("清掉旧表: " + t.get("id"));
+            }
+        }
+        Map<String, Object> t = c.createTable(DEMO_TABLE, "noul", "English demo table from the README");
+        String id = String.valueOf(t.get("id"));
+        System.out.println("建表: 「" + DEMO_TABLE + "」 mode=" + t.get("mode") + " → " + id);
+
+        // 2. 分支（判据=事件级原子断言；节点名含语料关键词，mock 按名子串匹配也能命中）
+        node(c, id, "ROOT", "Fare", "driver talks about the fare amount");
+        node(c, id, "ROOT", "Cargo", "driver talks about cargo handling or condition");
+        node(c, id, "ROOT", "Schedule", "driver talks about timing of the order");
+        node(c, id, "ROOT", "Service", "driver talks about service experience or contact");
+        node(c, id, "Fare", "surge", "driver asks for a higher fare or a surge");
+        node(c, id, "Fare", "lowball", "driver complains the offered fare is too low");
+        node(c, id, "Fare", "unpaid", "driver chases an unpaid fare");
+        node(c, id, "Cargo", "damaged", "cargo arrived damaged");
+        node(c, id, "Cargo", "loading", "argues about who does the loading");
+        node(c, id, "Schedule", "late", "warns the delivery will be late");
+        node(c, id, "Schedule", "cancel", "passenger or driver wants to cancel the order");
+        node(c, id, "Service", "complaint", "complains about service attitude");
+        node(c, id, "Service", "praise", "praises the passenger or the experience");
+        node(c, id, "Service", "contact", "wants to reach the passenger or support");
+        System.out.println("已加分支: Fare/Cargo/Schedule/Service × 9 叶");
+
+        // 3. 落位 8 条（建树零判定；每条 2 层判定）
+        doc(c, id, "D-01", "Please add a surge to the Fare, that mountain detour took an hour.");
+        doc(c, id, "D-02", "This Fare is a pure lowball for 40 km, please raise it.");
+        doc(c, id, "D-03", "The ride is done but the Fare is still unpaid, I need that money.");
+        doc(c, id, "D-04", "Half of the Cargo arrived damaged, boxes were crushed.");
+        doc(c, id, "D-05", "No one helped with the Cargo loading, I carried it all alone.");
+        doc(c, id, "D-06", "Schedule slip: bridge is jammed, delivery will be late by 30 minutes.");
+        doc(c, id, "D-07", "Schedule change: the passenger wants to cancel the order.");
+        doc(c, id, "D-08", "Great Service experience: big praise to this passenger, friendly and smooth pickup.");
+        System.out.println("已落位 8 条语料");
+        return id;
+    }
+
+    private static void node(SemQuestClient c, String id, String parent, String name, String yes) throws IOException {
+        Map<String, Object> rep = c.addNode(id, parent, name, yes, "");
+        System.out.println("  +" + rep.get("node") + " (重判 " + rep.get("judged") + " 迁入 " + rep.get("moved") + ")");
+    }
+
+    private static void doc(SemQuestClient c, String id, String docId, String content) throws IOException {
+        Map<String, Object> rep = c.add(id, content, docId);
+        System.out.println("  " + docId + " → " + rep.get("leaves"));
     }
 }

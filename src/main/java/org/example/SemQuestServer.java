@@ -11,10 +11,12 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.Charset;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -147,8 +149,10 @@ public final class SemQuestServer {
                         if (g > 0 && g <= 1) {
                             for (Table t : tables.values()) {
                                 if (t.tree.choiceMode() || g == t.tree.gate()) continue;
-                                t.tree.setGate(g);
-                                persistTable(t);
+                                synchronized (t) {       // 与 /api/t 请求共用表锁，别绕开树
+                                    t.tree.setGate(g);
+                                    persistTable(t);
+                                }
                                 System.out.println("[热载] 表「" + t.name + "」门控 → " + g);
                             }
                         }
@@ -156,8 +160,10 @@ public final class SemQuestServer {
                         if (cg > 0 && cg <= 1) {
                             for (Table t : tables.values()) {
                                 if (!t.tree.choiceMode() || cg == t.tree.choiceGate()) continue;
-                                t.tree.setChoiceGate(cg);
-                                persistTable(t);
+                                synchronized (t) {
+                                    t.tree.setChoiceGate(cg);
+                                    persistTable(t);
+                                }
                                 System.out.println("[热载] 表「" + t.name + "」采纳线 → " + cg);
                             }
                         }
@@ -386,7 +392,10 @@ public final class SemQuestServer {
         return id;
     }
 
-    /** 表落盘：meta + 内嵌 schema + 落位快照 + 增长/修改记录（同表并发写以 file 对象互斥）。 */
+    /**
+     * 表落盘：meta + 内嵌 schema + 落位快照 + 增长/修改记录。
+     * 同表并发写以 file 对象互斥；先写 &lt;id&gt;.json.tmp 再原子 rename——写一半崩溃不损旧快照。
+     */
     private static void persistTable(Table t) throws IOException {
         synchronized (t.file) {
             Files.createDirectories(t.file.getParent());
@@ -401,7 +410,13 @@ public final class SemQuestServer {
             m.put("docs", t.tree.docsSnapshot());
             m.put("grown", t.grown);
             m.put("edits", t.edits);
-            Files.write(t.file, Json.write(m).getBytes(UTF8));
+            Path tmp = t.file.resolveSibling(t.file.getFileName() + ".tmp");
+            Files.write(tmp, Json.write(m).getBytes(UTF8));
+            try {
+                Files.move(tmp, t.file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, t.file, StandardCopyOption.REPLACE_EXISTING);
+            }
         }
     }
 
@@ -517,6 +532,7 @@ public final class SemQuestServer {
                     json(ex, 404, "{\"error\":" + Json.str("未知表: " + id) + "}");
                     return;
                 }
+                synchronized (t) {   // 改名/备注与 /api/t 各动作共用表锁
                 try {
                     Map<String, Object> req = Json.parseObject(readBody(ex));
                     boolean changed = false;
@@ -546,6 +562,7 @@ public final class SemQuestServer {
                 } catch (IllegalArgumentException e) {
                     json(ex, 400, "{\"error\":" + Json.str(e.getMessage() == null ? "非法请求" : e.getMessage()) + "}");
                 }
+                }
                 return;
             }
             if ("DELETE".equalsIgnoreCase(ex.getRequestMethod())) {
@@ -555,7 +572,9 @@ public final class SemQuestServer {
                     json(ex, 404, "{\"error\":" + Json.str("未知表: " + id) + "}");
                     return;
                 }
-                Files.deleteIfExists(t.file);
+                synchronized (t) {   // 等在途动作出锁再删文件，防删后回写复活
+                    Files.deleteIfExists(t.file);
+                }
                 System.out.println("[删表] 「" + t.name + "」(" + id + ")");
                 json(ex, 200, "{\"ok\":true,\"id\":" + Json.str(id) + "}");
                 return;
@@ -584,6 +603,13 @@ public final class SemQuestServer {
                 json(ex, 404, "{\"error\":" + Json.str("未知表: " + id) + "}");
                 return;
             }
+            // 表级锁：同表所有动作（含判定与落盘）串行执行，不同表并行——树与统计计数非线程安全
+            synchronized (t) {
+                route(t, ex, action);
+            }
+        }
+
+        private void route(Table t, HttpExchange ex, String action) throws IOException {
             if (action.isEmpty() || "meta".equals(action)) {
                 if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
                     ex.sendResponseHeaders(405, -1);
