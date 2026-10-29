@@ -6,7 +6,8 @@
 
 # 决策后端: mock | jev | openrouter | bailian
 # mock = 零凭据确定性后端（纯关键词匹配，仅供体验 / 演示 / 测试，零 token）
-# 真实语义判定请切 jev 或 openrouter 并填对应 apikey
+# 决策模型 API key 目前支持两家：jev 与 OpenRouter，自行申请后填到下方对应 apikey；
+# 百炼暂未开放决策模型，待其上线后再适配
 backend=mock
 
 # noul 门控（P(yes) >= noulGate 视为通过）；choice 表用 choiceGate 采纳线。
@@ -27,7 +28,8 @@ jev.apikey=your-jev-api-key
 
 # ── OpenRouter ──────────────────────
 openrouter.url=https://openrouter.ai/api/alpha/decisions
-openrouter.model=baseten/mammoth-1:free
+# 免费款上下线是常态，当前款不可用时在上游模型列表挑 ⚡·免费 的换上
+openrouter.model=baseten/elephant-1:free
 openrouter.apikey=your-openrouter-api-key
 
 # ── 可视化服务（SemQuestServer）──────────────────────────
@@ -36,6 +38,7 @@ server.data=tree-data.json
 server.viz=viz.html
 
 # ── 阿里云百炼 ──────────────────
+# 百炼暂未开放决策模型，开放后再适配（先跑 mock / jev / openrouter）
 # 端点因部署而异（含个人工作区 ID），请从控制台获取
 bailian.url=your-bailian-endpoint-url
 bailian.model=decision-model-preview

@@ -8,7 +8,29 @@
 
 noul mode is a multi-select branch — one piece of content can hit multiple branches at once; retrieval fans out concurrently and ranks by number of hit leaves. choice mode is a single-select branch — one question per layer, one winning option, descending along a single path. Ships with a visualization server: a start page managing all tables (pick the branch mode when creating), per-table tree expansion, node details on click, right-click to add/edit/delete nodes, hot-swappable backends/models, and a console for placement and retrieval.
 
-![demo](docs/demo.gif)
+![demo](docs/demo-en.gif)
+
+## What a table looks like
+
+One table = one criteria tree. This is the English demo table shown in the GIF — built through the HTTP API with a handful of POSTs (see [docs/API.md](docs/API.md)):
+
+```
+ROOT
+├── Fare     ── surge / lowball / unpaid
+├── Cargo    ── damaged / loading
+├── Schedule ── late / cancel
+└── Service  ── complaint / praise / contact
+```
+
+Every node carries a yes criterion (an event-level atomic assertion); leaves hold the placed docs; every layer grows an `X_OTHER` fallback leaf. `add` and `quest` descend the same tree — the decision model answers one batched noul question per layer, and anything below the gate falls to that layer's fallback:
+
+| content / query | descends via | lands in |
+| --- | --- | --- |
+| `This Fare is a pure lowball for 40 km, please raise it.` | Fare → lowball | lowball |
+| `The ride is done but the Fare is still unpaid, I need that money.` | Fare → unpaid | unpaid |
+| `driver says the Fare is unpaid and the Cargo arrived damaged` *(query)* | Fare→unpaid ∥ Cargo→damaged | unpaid + damaged |
+
+Retrieval score = number of hit leaves; the GIF shows this third query returning two documents through two leaves, with the full per-layer probability trace.
 
 ## Why not vector search
 
@@ -28,7 +50,7 @@ javac -encoding UTF-8 -d target/classes $(find src/main/java -name "*.java")   #
 java -cp target/classes org.example.SemQuestServer
 ```
 
-Open http://localhost:8787 — with no model credentials configured the server automatically falls back to the **mock backend** (deterministic keyword matching; zero tokens, zero network). The demo table 司机意图 (driver intents, 7 utterances) is migrated automatically from files shipped in the repo. Open the table, switch to the right-side 控制台 (console) → 检索 search, and try `找运费价格相关：要求涨价、讨要运费的话术` to see multi-leaf hits, ranked documents and the decision trace. To plug in real models see [Configuration](#configuration) (start by copying `semquest.properties.example`).
+Open http://localhost:8787 — with no model credentials configured the server automatically falls back to the **mock backend** (deterministic keyword matching; zero tokens, zero network). The built-in demo table 司机意图 (a Chinese driver-intent tree, 7 utterances) is migrated automatically from files shipped in the repo — open it, switch to the right-side 控制台 (console) → 检索 search, and try `找运费价格相关：要求涨价、讨要运费的话术` to see multi-leaf hits, ranked documents and the decision trace. The GIF above shows its English twin, the Driver Intents table from the example below — you can rebuild it in minutes through the [HTTP API](docs/API.md) or the bundled [Java client](src/main/java/org/example/SemQuestClient.java). To plug in real models see [Configuration](#configuration) (start by copying `semquest.properties.example`).
 
 ## Running the visualization server
 
@@ -81,9 +103,22 @@ java -cp target/classes org.example.Demo jev 0.7     # backend + gate
 
 Prints add placement traces, quest hits and the token bill.
 
+## HTTP API & Java client
+
+The visualization server is itself a full REST API — table management, tree editing, placement, retrieval and model hot-swapping all go over HTTP. See **[docs/API.md](docs/API.md)** for every endpoint's inputs, outputs and semantics. The repo ships a zero-dependency Java client, [`org.example.SemQuestClient`](src/main/java/org/example/SemQuestClient.java): copy it together with `Json.java` into your Java backend and you can call every endpoint; the decision-model credentials live only on the server side, so the client needs no configuration:
+
+```bash
+java -cp target/classes org.example.SemQuestClient                    # default http://localhost:8787
+java -cp target/classes org.example.SemQuestClient http://localhost:8790   # custom address
+```
+
+`main()` runs a complete demo: create table → add branches → place docs → retrieve → adjust gate → drop the table (re-runnable; the demo table is deleted at the end). Note that add/quest fire real decision calls against the current backend (about 6 requests) — for a zero-cost demo switch the backend to mock first.
+
 ## Configuration
 
 All configuration lives in `semquest.properties` (start by copying [`semquest.properties.example`](semquest.properties.example); the real credentials file is excluded by `.gitignore`). Priority: `-Dsemquest.KEY=...` > config file > code defaults.
+
+**Two providers' API keys are currently supported: jev and OpenRouter** — apply on their platforms and fill the keys in the config file. Bailian has no decision model available yet; it will be adapted once one ships (its config entries are kept for then). For a no-credential experience use `backend=mock`.
 
 | Key | Meaning |
 | --- | --- |
@@ -93,7 +128,8 @@ All configuration lives in `semquest.properties` (start by copying [`semquest.pr
 | `schema` | demo table migration source, default driver-intent-schema.json |
 | `timeoutMs` | per-request timeout in milliseconds |
 | `server.port` / `server.tables` / `server.data` / `server.viz` | server port / tables dir / legacy data file (migration) / page file (restart required) |
-| `jev.*` / `openrouter.*` / `bailian.*` | per-backend url / model / apikey |
+| `jev.*` / `openrouter.*` | the two decision-model providers' url / model / apikey (bring your own keys) |
+| `bailian.*` | Bailian url / model / apikey (no decision model available yet; adapted once it ships) |
 | `mock.model` | display id of the mock backend model, default keyword-match |
 | `jev.models` / `openrouter.models` / `bailian.models` | manual model lists (comma-separated; when set they take priority; empty = fetch live from upstream) |
 

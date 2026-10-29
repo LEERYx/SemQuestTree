@@ -81,9 +81,22 @@ java -cp target/classes org.example.Demo jev 0.7     # 指定后端 + 门控
 
 打印 add 落位轨迹、quest 检索命中与 token 账单。
 
+## HTTP API 与 Java 客户端
+
+可视化服务本身就是一套 REST API——建表、管树、落位、检索、热切换模型全部走 HTTP，端点入出参详见 **[docs/API.md](docs/API.md)**。仓库自带零依赖 Java 客户端 [`org.example.SemQuestClient`](src/main/java/org/example/SemQuestClient.java)：连同 `Json.java` 两个文件拷进你的 Java 后端即可调用全部接口，决策模型凭据只需存在于服务端，客户端零配置：
+
+```bash
+java -cp target/classes org.example.SemQuestClient                    # 默认 http://localhost:8787
+java -cp target/classes org.example.SemQuestClient http://localhost:8790   # 指定地址
+```
+
+`main()` 完整演示建表 → 加分支 → 落位 → 检索 → 调门控 → 删表（可重复运行，结束自动删演示表）；注意 add/quest 会对当前后端发起真实判定（约 6 次请求），零成本演示先把后端切到 mock。
+
 ## 配置
 
 全部配置集中在 `semquest.properties`（从 [`semquest.properties.example`](semquest.properties.example) 复制起步；真实凭据文件已被 `.gitignore` 排除），优先级：`-Dsemquest.KEY=...` > 配置文件 > 代码默认。
+
+**决策模型 API key 目前支持两家：jev 与 OpenRouter**，需自行到对应平台申请并在配置文件填写；百炼暂未开放决策模型，待其上线后再适配（配置项先保留备用）。零凭据体验用 `backend=mock`。
 
 | 配置 | 说明 |
 | --- | --- |
@@ -93,7 +106,8 @@ java -cp target/classes org.example.Demo jev 0.7     # 指定后端 + 门控
 | `schema` | demo 表迁移来源，默认 driver-intent-schema.json |
 | `timeoutMs` | 单请求超时（毫秒） |
 | `server.port` / `server.tables` / `server.data` / `server.viz` | 服务端口 / 表目录 / 旧版数据文件（迁移用） / 页面文件（重启生效） |
-| `jev.*` / `openrouter.*` / `bailian.*` | 各后端 url / model / apikey |
+| `jev.*` / `openrouter.*` | 决策模型两家的 url / model / apikey（key 自行申请） |
+| `bailian.*` | 百炼 url / model / apikey（暂未开放决策模型，上线后适配） |
 | `mock.model` | mock 后端模型 id 展示名，默认 keyword-match |
 | `jev.models` / `openrouter.models` / `bailian.models` | 手动模型清单（逗号分隔；配置即清单优先生效，留空回上游实时拉取） |
 
