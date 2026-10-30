@@ -53,7 +53,20 @@ java -cp target/classes org.example.SemQuestServer
 
 ## Running the visualization server
 
-Compile + start is the command block above; stop everything with:
+From the SemQuestTree directory, compile + start:
+
+```bash
+mkdir -p target/classes && javac -encoding UTF-8 -d target/classes $(find src/main/java -name "*.java") \
+     && java -cp target/classes org.example.SemQuestServer
+```
+
+Or start directly if already compiled:
+
+```bash
+java -cp target/classes org.example.SemQuestServer
+```
+
+Stop the server (kills every local SemQuestServer process):
 
 ```bash
 pkill -f org.example.SemQuestServer
@@ -107,7 +120,7 @@ All configuration lives in `semquest.properties` (start by copying [`semquest.pr
 | `backend` | mock \| jev \| openrouter \| bailian (jev without a key falls back to openrouter, then to mock; mock always works with no credentials) |
 | `noulGate` | noul gate, default 0.7 (initial value for new noul tables; adjustable per table from the header) |
 | `choiceGate` | choice acceptance line, default 0.6 (initial value for new choice tables; adjustable per table from the header) |
-| `prompt.*` | decision prompts (server-composed wording), add (placement) and search (retrieval) each with their own set: `prompt.rule.add` / `prompt.rule.search` (state rule; default for new tables — a hot reload swaps only tables still carrying the previous default text, customized ones are untouched), `prompt.noul.add.instructions` / `prompt.noul.search.instructions` ({name} = branch name), `prompt.noul.add.criterion` / `prompt.noul.search.criterion` ({yes} = raw criterion, {name} = branch name; wraps the criterion text before judging — add defaults to identity `{yes}`, search defaults to a retrieval frame so generic queries like "all sad utterances" can pass mechanism-description criteria), `prompt.choice.add.root` / `prompt.choice.add.node` / `prompt.choice.search.root` / `prompt.choice.search.node` ({node} = node name, ROOT layer uses the root key), `prompt.choice.other` (fallback option description); delete the line or leave it blank for the built-in default |
+| `prompt.*` | decision prompts (server-composed wording), add (placement) and search (retrieval) each with their own set: `prompt.rule.add` / `prompt.rule.search` (state rule; default for new tables — a hot reload swaps only tables still carrying the previous default text, customized ones are untouched), `prompt.noul.add.instructions` ({name} = branch name), `prompt.noul.search.criterion` ({yes} = raw criterion, {name} = branch name; wraps the criterion text in a retrieval frame before judging so generic queries like "all sad utterances" can pass mechanism-description criteria — the add side is a hard-coded identity `{yes}`, no config key), `prompt.noul.search.query` ({query} = the raw query; wraps the retrieval request in a role frame too, anchoring "the query" for the criterion frame so meta-descriptive queries are not judged as content themselves — default "用户想检索：{query}", set `{query}` for identity), `prompt.choice.add.root` / `prompt.choice.add.node` ({node} = node name, ROOT layer uses the root key), `prompt.choice.other` (fallback option description); optional divergence keys `prompt.noul.search.instructions` / `prompt.choice.search.root` / `prompt.choice.search.node` inherit the add-side value when absent or blank; delete the line or leave it blank for the built-in default |
 | `questCacheSize` | query-result cache capacity (entries), default 256; 0 = off; identical queries return with zero model calls; hot-reloaded on config save |
 | `schema` | demo table migration source, default driver-intent-schema.json |
 | `timeoutMs` | per-request timeout in milliseconds |

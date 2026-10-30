@@ -28,19 +28,24 @@ prompt.rule.add=判定输入内容与哪个分支的判据相符。
 prompt.rule.search=判断查询内容在寻找哪个分支下的内容。
 # noul instructions（questions{name}.instructions；{name}=分支名）
 prompt.noul.add.instructions={name}
-prompt.noul.search.instructions={name}
-# noul 判据包裹（判定前对判据文本套模板；{yes}=判据原文、{name}=分支名）
-# add 默认恒等 {yes}（落位行为不变）；search 默认包检索框架，让「所有悲伤的话」这类
+# noul 检索判据包裹（判定前对判据文本套模板；{yes}=判据原文、{name}=分支名）
+# 落位侧恒等 {yes}（写死，无配置键）；检索侧默认包检索框架，让「所有悲伤的话」这类
 # 泛查询能过机制描述型判据——框架落在模型真正读的判据字段里，树数据保持纯定义
-prompt.noul.add.criterion={yes}
 prompt.noul.search.criterion=该查询的结果应包含满足以下描述的内容：{yes}
 # choice 问句（questions.q.instructions；{node}=层节点名，ROOT 层用 root 键）
 prompt.choice.add.root=这句话最符合哪一类？
 prompt.choice.add.node={node}
-prompt.choice.search.root=这句话最符合哪一类？
-prompt.choice.search.node={node}
 # choice 兜底选项描述（criteria[X_OTHER]）
 prompt.choice.other=以上都不符合
+
+# noul 检索请求包裹（{query}=查询原文）：给上面判据检索框架里的「该查询」提供指代源，
+# 使「所有悲伤的话」这类元描述查询不被当成内容本身判定；配 {query} 即恒等退回裸查询
+prompt.noul.search.query=用户想检索：{query}
+
+# 可选分野键：检索侧用不同文案时才配，删行或留空即继承 add 侧同键
+#prompt.noul.search.instructions={name}
+#prompt.choice.search.root=这句话最符合哪一类？
+#prompt.choice.search.node={node}
 
 # 预制层级分支 schema（类似建表的字段声明）
 schema=driver-intent-schema.json

@@ -255,17 +255,23 @@ public final class SemQuestServer {
 
     // ── 多表持久化 ──────────────────────────────────────────────────
 
-    /** semquest.properties → 判定提示词（prompt.*，空值回内置默认）。 */
+    /** semquest.properties → 判定提示词（prompt.*，空值回内置默认）。
+     *  3 个可选分野键（noul.search.instructions、choice.search.{root,node}）缺省/留空即继承 add 侧同键。 */
     private static SemQuestTree.Prompts promptsOf(Config cfg) {
+        String noulAdd = cfg.get("prompt.noul.add.instructions", null);
+        String choiceRoot = cfg.get("prompt.choice.add.root", null);
+        String choiceNode = cfg.get("prompt.choice.add.node", null);
+        String noulSearch = cfg.get("prompt.noul.search.instructions", null);
+        String searchRoot = cfg.get("prompt.choice.search.root", null);
+        String searchNode = cfg.get("prompt.choice.search.node", null);
         return new SemQuestTree.Prompts(
-                cfg.get("prompt.noul.add.instructions", null),
-                cfg.get("prompt.noul.search.instructions", null),
-                cfg.get("prompt.noul.add.criterion", null),
+                noulAdd,
+                noulSearch != null ? noulSearch : noulAdd,
                 cfg.get("prompt.noul.search.criterion", null),
-                cfg.get("prompt.choice.add.root", null),
-                cfg.get("prompt.choice.add.node", null),
-                cfg.get("prompt.choice.search.root", null),
-                cfg.get("prompt.choice.search.node", null),
+                cfg.get("prompt.noul.search.query", null),
+                choiceRoot, choiceNode,
+                searchRoot != null ? searchRoot : choiceRoot,
+                searchNode != null ? searchNode : choiceNode,
                 cfg.get("prompt.choice.other", null));
     }
 
@@ -1182,6 +1188,7 @@ public final class SemQuestServer {
                     LinkedHashMap<String, Object> r = new LinkedHashMap<String, Object>();
                     r.put("id", id);
                     r.put("leaves", new ArrayList<Object>(rep.leaves));
+                    r.put("steps", stepsJson(rep.steps));
                     results.add(r);
                     added++;
                 } catch (IOException e) {

@@ -55,26 +55,29 @@ public final class SemQuestTree {
     /**
      * 系统侧判定提示词：结构化判定方言里由服务组装的文案。判据 yes/no 与规则文本归树（节点数据），不在这里。
      * 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文；空值回内置默认。
-     * add（落位）与 search（检索）各一套，对应配置键：prompt.noul.{add,search}.instructions、
-     * prompt.noul.{add,search}.criterion、prompt.choice.{add,search}.{root,node}、prompt.choice.other。
-     * criterion 在判定前包裹判据文本（add 默认恒等 {yes}；search 默认包检索框架），
-     * 使「所有悲伤的话」这类泛查询能过机制描述型判据——框架落在模型真正读的判据字段里。
+     * 必列键：prompt.rule.{add,search}、prompt.noul.add.instructions、prompt.noul.search.criterion、
+     * prompt.choice.{add.root,add.node,other}；另 3 个可选分野键（prompt.noul.search.instructions、
+     * prompt.choice.search.{root,node}）缺省/留空即继承 add 侧同键（服务端 promptsOf 解析）。
+     * criterion 在判定前包裹判据文本（落位侧恒等 {yes} 写死；检索侧默认包检索框架）；questQuery
+     * 包裹检索请求原文（{query}=查询原文）——两侧框架配套，给判据框架里的「该查询」提供指代源，
+     * 使「所有悲伤的话」这类泛查询能过机制描述型判据——框架落在模型真正读的字段里。
      * noul instructions 仅 jev / respan 方言下发；openrouter（非 respan）与百炼下发的是判据文本（含包裹），此模板不影响它们。
      */
     public static final class Prompts {
 
         private static final String D_NOUL_INSTRUCTIONS = "{name}";
-        private static final String D_NOUL_ADD_CRITERION = "{yes}";
         private static final String D_NOUL_SEARCH_CRITERION = "该查询的结果应包含满足以下描述的内容：{yes}";
+        private static final String D_NOUL_SEARCH_QUERY = "用户想检索：{query}";
         private static final String D_ROOT_QUESTION = "这句话最符合哪一类？";
         private static final String D_NODE_QUESTION = "{node}";
 
         /** noul 题目 instructions 模板（{name}=分支名）。 */
         public final String noulAddInstructions;
         public final String noulSearchInstructions;
-        /** noul 判据包裹模板（{yes}=判据原文、{name}=分支名；add 默认恒等）。 */
-        public final String noulAddCriterion;
+        /** noul 判据包裹模板（{yes}=判据原文、{name}=分支名；落位侧恒等写死，这里只承载检索模板）。 */
         public final String noulSearchCriterion;
+        /** noul 检索请求包裹模板（{query}=查询原文）：给 criterion 检索框架里的「该查询」提供指代源。 */
+        public final String noulSearchQuery;
         /** choice 根层问句。 */
         public final String choiceAddRoot;
         /** choice 子层问句模板（{node}=层节点名）。 */
@@ -90,14 +93,14 @@ public final class SemQuestTree {
         }
 
         public Prompts(String noulAddInstructions, String noulSearchInstructions,
-                       String noulAddCriterion, String noulSearchCriterion,
+                       String noulSearchCriterion, String noulSearchQuery,
                        String choiceAddRoot, String choiceAddNode,
                        String choiceSearchRoot, String choiceSearchNode,
                        String choiceOtherOption) {
             this.noulAddInstructions = blank(noulAddInstructions) ? D_NOUL_INSTRUCTIONS : noulAddInstructions.trim();
             this.noulSearchInstructions = blank(noulSearchInstructions) ? D_NOUL_INSTRUCTIONS : noulSearchInstructions.trim();
-            this.noulAddCriterion = blank(noulAddCriterion) ? D_NOUL_ADD_CRITERION : noulAddCriterion.trim();
             this.noulSearchCriterion = blank(noulSearchCriterion) ? D_NOUL_SEARCH_CRITERION : noulSearchCriterion.trim();
+            this.noulSearchQuery = blank(noulSearchQuery) ? D_NOUL_SEARCH_QUERY : noulSearchQuery.trim();
             this.choiceAddRoot = blank(choiceAddRoot) ? D_ROOT_QUESTION : choiceAddRoot.trim();
             this.choiceAddNode = blank(choiceAddNode) ? D_NODE_QUESTION : choiceAddNode.trim();
             this.choiceSearchRoot = blank(choiceSearchRoot) ? D_ROOT_QUESTION : choiceSearchRoot.trim();
@@ -111,10 +114,15 @@ public final class SemQuestTree {
             return tpl.replace("{name}", name);
         }
 
-        /** noul 判据文本：按任务侧别取包裹模板，{yes} 替换判据原文、{name} 替换分支名（add 默认恒等，search 默认包检索框架）。 */
+        /** noul 判据文本：按任务侧别取包裹模板，{yes} 替换判据原文、{name} 替换分支名（落位侧恒等 {yes} 写死，检索侧包检索框架）。 */
         public String criterion(Task task, String yes, String name) {
-            String tpl = task == Task.ADD ? noulAddCriterion : noulSearchCriterion;
+            String tpl = task == Task.ADD ? "{yes}" : noulSearchCriterion;
             return tpl.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
+        }
+
+        /** noul 检索请求文本：包裹模板 {query} 替换查询原文（仅检索侧，add 内容原文直下）。 */
+        public String questQuery(String query) {
+            return noulSearchQuery.replace("{query}", query == null ? "" : query);
         }
 
         /** choice 问句：根层用 root 问句，子层模板 {node} 替换层节点名。 */
@@ -130,8 +138,8 @@ public final class SemQuestTree {
             Prompts p = (Prompts) o;
             return noulAddInstructions.equals(p.noulAddInstructions)
                     && noulSearchInstructions.equals(p.noulSearchInstructions)
-                    && noulAddCriterion.equals(p.noulAddCriterion)
                     && noulSearchCriterion.equals(p.noulSearchCriterion)
+                    && noulSearchQuery.equals(p.noulSearchQuery)
                     && choiceAddRoot.equals(p.choiceAddRoot)
                     && choiceAddNode.equals(p.choiceAddNode)
                     && choiceSearchRoot.equals(p.choiceSearchRoot)
@@ -143,8 +151,8 @@ public final class SemQuestTree {
         public int hashCode() {
             int h = noulAddInstructions.hashCode();
             h = h * 31 + noulSearchInstructions.hashCode();
-            h = h * 31 + noulAddCriterion.hashCode();
             h = h * 31 + noulSearchCriterion.hashCode();
+            h = h * 31 + noulSearchQuery.hashCode();
             h = h * 31 + choiceAddRoot.hashCode();
             h = h * 31 + choiceAddNode.hashCode();
             h = h * 31 + choiceSearchRoot.hashCode();
@@ -550,7 +558,8 @@ public final class SemQuestTree {
         if (choiceMode) {
             descendQuestChoice(root, query, matched, rep, ruleSearch, 1.0d);
         } else {
-            descendQuest(root, query, matched, rep.steps, ruleSearch);
+            // 检索请求先包角色框架再下发：给判据检索框架里的「该查询」提供指代源（缓存键/报告/节点直取均保持原始查询）
+            descendQuest(root, prompts.questQuery(query), matched, rep.steps, ruleSearch);
         }
 
         LinkedHashMap<Doc, LinkedHashSet<String>> via = new LinkedHashMap<Doc, LinkedHashSet<String>>();

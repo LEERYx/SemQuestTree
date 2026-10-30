@@ -125,6 +125,8 @@
   .q-row textarea:focus { outline: none; border-color: #245743; }
   .q-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
   .q-modes .hint-dim { color: #5b6472; font-size: 11.5px; margin-left: 8px; }
+  #q-submodes { margin-bottom: 8px; }
+  #q-submodes .tab { padding: 2px 10px; font-size: 11.5px; }
   .q-sub { font-size: 12px; letter-spacing: 2px; color: #8b95a5; margin: 16px 0 8px; }
   .chip { display: inline-block; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
     color: #f2d38b; background: #241d10; border: 1px solid #57431f; border-radius: 99px;
@@ -282,10 +284,14 @@
       <div id="detail" style="display:none"></div>
     </div>
     <div id="tab-quest" style="display:none">
-      <div class="q-modes">
+      <div class="q-modes" id="q-mainmodes">
         <button class="tab active" data-mode="add" data-i18n="q.modeAdd">落位 add</button>
         <button class="tab" data-mode="search" data-i18n="q.modeSearch">检索 search</button>
         <span class="hint-dim" id="q-hint"></span>
+      </div>
+      <div class="q-modes" id="q-submodes" style="display:none">
+        <button class="tab active" data-sub="single" data-i18n="q.subSingle">单条</button>
+        <button class="tab" data-sub="batch" data-i18n="q.subBatch">批量</button>
       </div>
       <div class="q-row" id="q-id-row" style="display:none">
         <input id="q-doc-id" data-i18n-ph="q.docIdPh" placeholder="文档 ID（留空自动生成；同 ID 重落会替换旧落位）">
@@ -337,13 +343,16 @@
       'detail.otherNoul': '兜底叶不参与判定请求（无判据）——本层无真实判据过门时落位于此',
       'detail.otherChoice': '兜底选项「以上都不符合」：本层无选项胜出，或胜出置信度低于采纳线 {gate} 时落位于此',
       'q.modeAdd': '落位 add', 'q.modeSearch': '检索 search',
-      'q.hintAdd': 'Enter 落位 · Shift+Enter 换行 · 多行 = 批量导入（每行一条）',
+      'q.subSingle': '单条', 'q.subBatch': '批量',
+      'q.hintAddSingle': 'Enter 落位 · Shift+Enter 换行（换行属于内容）',
+      'q.hintBatch': '空行分隔多条 · 段内换行属于该条 · Enter 提交全部',
       'q.hintSearch': 'Enter 检索 · Shift+Enter 换行',
       'q.docIdPh': '文档 ID（留空自动生成；同 ID 重落会替换旧落位）',
       'q.goAdd': '落位', 'q.goSearch': '检索',
-      'q.phAddNoul': '粘贴一条司机话术，按判据树落位（同 ID 重落替换旧落位）；多行则批量导入',
-      'q.phAddChoice': '粘贴一条内容，按选项逐层单选下行落位（同 ID 重落替换旧落位）',
-      'q.phSearch': '输入检索语句，如：哪些司机嫌运费太低不赚钱',
+      'q.phAddNoul': '粘贴一条内容，按判据树落位（换行属于内容；同 ID 重落替换旧落位）',
+      'q.phAddChoice': '粘贴一条内容，按选项逐层单选下行落位（换行属于内容；同 ID 重落替换旧落位）',
+      'q.phBatch': '多条内容，条与条之间空一行；段内换行属于该条内容自身',
+      'q.phSearch': '输入自然语言检索语句',
       'q.emptyAdd': '请输入内容正文', 'q.emptySearch': '请输入检索语句',
       'q.loadingAdd': '逐层判定落位中…', 'q.loadingQuest': '逐层判定中…',
       'add.done': '落位完成 · {id}',
@@ -370,9 +379,9 @@
       'dlg.scopeChoiceInternal': '将在该层新增一个选项；父层兜底存量按完整选项列表重判（每条 1 次请求），选中此项则迁入',
       'dlg.critHint': '。判据用中文事件级原子断言。',
       'dlg.nameLabelNoul': '节点名 NAME', 'dlg.nameLabelChoice': '选项名（新分支）',
-      'dlg.namePhNoul': '如 定位异常', 'dlg.namePhChoice': '如 运费争议',
+      'dlg.namePhNoul': '输入节点名', 'dlg.namePhChoice': '输入选项名',
       'dlg.yesLabelNoul': 'yes 判据（是侧原子断言）', 'dlg.yesLabelChoice': '选项描述（可选；留空用选项名本身）',
-      'dlg.yesPhNoul': '司机报告系统定位错误或导航找不到入口…', 'dlg.yesPhChoice': '司机对运费金额、扣款或计价有异议…',
+      'dlg.yesPhNoul': '描述应落入该分支的内容特征（事件级原子断言）…', 'dlg.yesPhChoice': '描述该选项涵盖的内容…',
       'dlg.noLabel': 'no 判据（留空自动生成）',
       'dlg.create': '创建', 'dlg.cancel': '取消', 'dlg.save': '保存',
       'dlg.errNoul': '节点名与 yes 判据必填', 'dlg.errChoice': '选项名必填', 'dlg.errNameEmpty': '名称不可为空',
@@ -440,13 +449,16 @@
       'detail.otherNoul': 'Fallback leaf takes no decision requests (no criteria) — content lands here when no real criterion passes this level',
       'detail.otherChoice': 'Fallback option "none of the above": lands here when no option wins, or the win confidence is below the accept line {gate}',
       'q.modeAdd': 'add', 'q.modeSearch': 'search',
-      'q.hintAdd': 'Enter to add · Shift+Enter newline · multi-line = batch import (one per line)',
+      'q.subSingle': 'Single', 'q.subBatch': 'Batch',
+      'q.hintAddSingle': 'Enter to add · Shift+Enter newline (newlines are part of the content)',
+      'q.hintBatch': 'Blank line separates entries · in-entry newlines kept · Enter submits all',
       'q.hintSearch': 'Enter to search · Shift+Enter newline',
       'q.docIdPh': 'Doc ID (empty = auto; re-adding the same ID replaces its placement)',
       'q.goAdd': 'Add', 'q.goSearch': 'Search',
-      'q.phAddNoul': 'Paste one utterance to place it down the criteria tree (same ID replaces); multiple lines = batch import',
-      'q.phAddChoice': 'Paste one utterance to place it down the option tree (same ID replaces)',
-      'q.phSearch': 'Type a query, e.g. drivers complaining the fare is too low',
+      'q.phAddNoul': 'Paste one piece of content to place it down the criteria tree (newlines are part of the content; same ID replaces)',
+      'q.phAddChoice': 'Paste one piece of content to place it down the option tree (newlines are part of the content; same ID replaces)',
+      'q.phBatch': 'Multiple entries, one blank line between them; newlines within an entry are kept',
+      'q.phSearch': 'Type a natural-language query',
       'q.emptyAdd': 'Type the content first', 'q.emptySearch': 'Type a query first',
       'q.loadingAdd': 'Descending & placing…', 'q.loadingQuest': 'Descending…',
       'add.done': 'Placed · {id}',
@@ -473,9 +485,9 @@
       'dlg.scopeChoiceInternal': 'A new option joins this level; fallback docs are re-judged against the full option list (1 request each) and move in if this option wins',
       'dlg.critHint': '. Criteria are event-level atomic assertions.',
       'dlg.nameLabelNoul': 'Node NAME', 'dlg.nameLabelChoice': 'Option name (new branch)',
-      'dlg.namePhNoul': 'e.g. GPS glitch', 'dlg.namePhChoice': 'e.g. Fare dispute',
+      'dlg.namePhNoul': 'Branch name', 'dlg.namePhChoice': 'Option name',
       'dlg.yesLabelNoul': 'yes criterion (YES-side atomic assertion)', 'dlg.yesLabelChoice': 'Option description (optional; empty = use the name)',
-      'dlg.yesPhNoul': 'Driver reports a GPS error or the navigation cannot find the entrance…', 'dlg.yesPhChoice': 'Driver disputes the fare amount, deduction or pricing…',
+      'dlg.yesPhNoul': 'Describe the content that belongs to this branch (event-level atomic assertion)…', 'dlg.yesPhChoice': 'Describe the content this option covers…',
       'dlg.noLabel': 'no criterion (empty = auto-generated)',
       'dlg.create': 'Create', 'dlg.cancel': 'Cancel', 'dlg.save': 'Save',
       'dlg.errNoul': 'Node name and yes criterion are required', 'dlg.errChoice': 'Option name is required', 'dlg.errNameEmpty': 'Name cannot be empty',
@@ -522,6 +534,7 @@
     $('#langBtn').textContent = LANG === 'zh' ? 'EN' : '中文';
     applyGateLabel();
     setMode(consoleMode);
+    setAddSub(addSub);
     if (state.tinfo) document.title = state.tinfo.name + ' · ' + T('app.titleShort');
     else document.title = T('app.docTitle');
   }
@@ -529,8 +542,8 @@
   const $ = sel => document.querySelector(sel);
   const state = { tid: null, mode: 'noul',
     expanded: new Set(), containers: {}, wraps: {}, selectedRow: null,
-    backend: '', gate: 0.7, choiceGate: 0.6, docCount: 0, tinfo: null,
-    allModels: [], modelSource: '', modelBarInit: false };
+    gate: 0.7, choiceGate: 0.6, tinfo: null,
+    allModels: [], modelBarInit: false };
 
   const T0 = () => '/api/t/' + state.tid;
   const fmtScore = v => (typeof v === 'number' && !Number.isInteger(v)) ? v.toFixed(2) : String(v);
@@ -540,24 +553,34 @@
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // GET 出口：非 2xx 抛 Error（服务端 {error} 文案优先），否则返回解析后的 JSON
   async function api(path) {
     const r = await fetch(path);
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      throw new Error(e.error || ('HTTP ' + r.status));
-    }
-    return r.json();
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
   }
 
-  async function apiPost(path, body) {
+  // POST/PUT/DELETE 出口：body 为 null 时不带请求体（DELETE 用）；错误处理与 api() 同一语义
+  async function apiSend(path, method, body) {
     const r = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {})
+      method: method,
+      headers: body != null ? { 'Content-Type': 'application/json' } : undefined,
+      body: body != null ? JSON.stringify(body) : undefined
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     return d;
+  }
+
+  /** 对话框骨架：挂遮罩、点遮罩关闭，返回 overlay 元素（内部控件由调用方接线）。 */
+  function openOverlay(html) {
+    const ov = document.createElement('div');
+    ov.className = 'overlay';
+    ov.innerHTML = html;
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    return ov;
   }
 
   // ── hash 路由：#/ 开始页 · #/t/<id> 表内视图 ────────────────────
@@ -617,9 +640,7 @@
 
   // 修改表名/备注（开始页卡片与表内头部共用）；onSaved 收到最新表元信息
   function openTableEditDialog(t, onSaved) {
-    const ov = document.createElement('div');
-    ov.className = 'overlay';
-    ov.innerHTML =
+    const ov = openOverlay(
       '<div class="dialog">' +
       '  <h3>' + esc(Tf('tbl.editTitle', { name: t.name })) + '</h3>' +
       '  <div class="dlg-note">' + esc(Tf('tbl.editNote', { mode: T(t.mode === 'choice' ? 'tag.choice' : 'tag.noul') })) + '</div>' +
@@ -629,9 +650,7 @@
       '  <input id="et-note" value="' + esc(t.note || '') + '">' +
       '  <div class="actions"><button class="btn" id="et-cancel">' + esc(T('dlg.cancel')) + '</button>' +
       '  <button class="btn primary" id="et-ok">' + esc(T('dlg.save')) + '</button></div>' +
-      '</div>';
-    document.body.appendChild(ov);
-    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+      '</div>');
     ov.querySelector('#et-cancel').onclick = () => ov.remove();
     ov.querySelector('#et-ok').onclick = async () => {
       const name = ov.querySelector('#et-name').value.trim();
@@ -643,13 +662,7 @@
       if (!Object.keys(body).length) { ov.remove(); return; }
       ov.querySelector('#et-ok').disabled = true;
       try {
-        const r = await fetch('/api/tables?id=' + encodeURIComponent(t.id), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-        const out = await r.json().catch(() => ({}));
-        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#et-ok').disabled = false; return; }
+        const out = await apiSend('/api/tables?id=' + encodeURIComponent(t.id), 'PUT', body);
         ov.remove();
         toast(Tf('toast.tblSaved', { name: out.name, note: out.note ? '· ' + out.note : '' }));
         if (onSaved) onSaved(out);
@@ -661,24 +674,18 @@
   }
 
   function confirmDeleteTable(t) {
-    const ov = document.createElement('div');
-    ov.className = 'overlay';
-    ov.innerHTML =
+    const ov = openOverlay(
       '<div class="dialog">' +
       '  <h3>' + esc(Tf('tbl.delTitle', { name: t.name })) + '</h3>' +
       '  <div class="dlg-note">' + esc(Tf('tbl.delNote', { id: t.id })) + '</div>' +
       '  <div class="actions"><button class="btn" id="dt-cancel">' + esc(T('dlg.cancel')) + '</button>' +
       '  <button class="btn danger" id="dt-ok">' + esc(T('tbl.delBtn')) + '</button></div>' +
-      '</div>';
-    document.body.appendChild(ov);
-    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+      '</div>');
     ov.querySelector('#dt-cancel').onclick = () => ov.remove();
     ov.querySelector('#dt-ok').onclick = async () => {
       ov.querySelector('#dt-ok').disabled = true;
       try {
-        const r = await fetch('/api/tables?id=' + encodeURIComponent(t.id), { method: 'DELETE' });
-        const out = await r.json().catch(() => ({}));
-        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#dt-ok').disabled = false; return; }
+        await apiSend('/api/tables?id=' + encodeURIComponent(t.id), 'DELETE', null);
         ov.remove();
         toast(Tf('toast.tblDeleted', { name: t.name }));
         loadTables();
@@ -704,7 +711,7 @@
     if (!name) { toast(T('toast.needName'), true); return; }
     $('#nt-go').disabled = true;
     try {
-      const out = await apiPost('/api/tables', { name, mode, note });
+      const out = await apiSend('/api/tables', 'POST', { name, mode, note });
       $('#nt-name').value = ''; $('#nt-note').value = '';
       toast(Tf('toast.tblCreated', { name: out.name, mode: out.mode }));
       location.hash = '#/t/' + encodeURIComponent(out.id);
@@ -723,7 +730,6 @@
       state.mode = d.meta.mode;
       state.gate = d.meta.noulGate;
       state.choiceGate = d.meta.choiceGate;
-      state.docCount = d.docCount;
       $('#tblName').textContent = d.name;
       $('#tblName').title = d.note || d.name;
       $('#tblName').style.display = '';
@@ -739,7 +745,6 @@
       $('#detailPanel').style.display = '';
       $('#gateLb').style.display = '';
       document.title = d.name + ' · ' + T('app.titleShort');
-      applyGateLabel();
       renderStats(d.meta);
       state.expanded = new Set();
       state.containers = {};
@@ -781,8 +786,7 @@
     $('#stats').textContent = Tf('hdr.docs', { n: m.docCount });
     if (state.mode === 'choice' && m.choiceGate != null) state.choiceGate = m.choiceGate;
     if (m.noulGate != null) state.gate = m.noulGate;
-    const g = $('#gate');
-    if (document.activeElement !== g) g.value = gateVal();
+    applyGateLabel();   // 门控标签与输入框随 meta 同步（正在编辑时不覆盖）
   }
 
   $('#gate').addEventListener('change', async () => {
@@ -791,7 +795,7 @@
     const label = T(choice ? 'gate.choice' : 'gate.noul');
     if (!(v > 0 && v <= 1)) { toast(Tf('toast.gateRange', { label }), true); $('#gate').value = gateVal(); return; }
     try {
-      const out = await apiPost(T0() + '/gate', choice ? { choiceGate: v } : { noulGate: v });
+      const out = await apiSend(T0() + '/gate', 'POST', choice ? { choiceGate: v } : { noulGate: v });
       if (choice) state.choiceGate = out.choiceGate; else state.gate = out.noulGate;
       $('#gate').value = gateVal();
       toast(Tf('toast.gateOk', { label, value: gateVal() }));
@@ -921,7 +925,6 @@
     try {
       const t = await api(T0() + '/tree');
       state.mode = t.mode;
-      applyGateLabel();
       renderStats(t);
       const acc = new Set();
       (function collect(n) {
@@ -985,9 +988,7 @@
         : (parentNode.leaf
             ? Tf('dlg.scopeNoulLeaf', { other: parentNode.name + '_OTHER' })
             : Tf('dlg.scopeNoulInternal', { other: parentNode.name + '_OTHER' }));
-    const ov = document.createElement('div');
-    ov.className = 'overlay';
-    ov.innerHTML =
+    const ov = openOverlay(
       '<div class="dialog">' +
       '  <h3>' + esc(Tf(choice ? 'dlg.addTitleChoice' : 'dlg.addTitleNoul', { parent: parentNode.name })) + '</h3>' +
       '  <div class="dlg-note">' + esc(scope + (choice ? '' : T('dlg.critHint'))) + '</div>' +
@@ -1000,9 +1001,7 @@
       '  <input id="jn-no" placeholder="">') +
       '  <div class="actions"><button class="btn" id="jn-cancel">' + esc(T('dlg.cancel')) + '</button>' +
       '  <button class="btn primary" id="jn-ok">' + esc(T('dlg.create')) + '</button></div>' +
-      '</div>';
-    document.body.appendChild(ov);
-    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+      '</div>');
     ov.querySelector('#jn-cancel').onclick = () => ov.remove();
     const val = id => ov.querySelector('#' + id).value.trim();
     ov.querySelector('#jn-ok').onclick = async () => {
@@ -1010,13 +1009,7 @@
       if (!body.name || (!choice && !body.yes)) { toast(T(choice ? 'dlg.errChoice' : 'dlg.errNoul'), true); return; }
       ov.querySelector('#jn-ok').disabled = true;
       try {
-        const rep = await fetch(T0() + '/node', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-        const out = await rep.json().catch(() => ({}));
-        if (!rep.ok) { toast(out.error || ('HTTP ' + rep.status), true); ov.querySelector('#jn-ok').disabled = false; return; }
+        const out = await apiSend(T0() + '/node', 'POST', body);
         ov.remove();
         const movedTxt = (out.moves || []).filter(m => m.moved)
             .map(m => m.docId + ' ' + (+m.prob).toFixed(2)).join('、');
@@ -1042,9 +1035,7 @@
 
   function openEditDialog(node) {
     const choice = state.mode === 'choice';
-    const ov = document.createElement('div');
-    ov.className = 'overlay';
-    ov.innerHTML =
+    const ov = openOverlay(
       '<div class="dialog">' +
       '  <h3>' + esc(Tf(choice ? 'dlg.editTitleChoice' : 'dlg.editTitleNoul', { name: node.name })) + '</h3>' +
       '  <div class="dlg-note">' + esc(T('dlg.editNote')) + '</div>' +
@@ -1057,9 +1048,7 @@
       '  <input id="ed-no" value="' + esc(node.no || '') + '">') +
       '  <div class="actions"><button class="btn" id="ed-cancel">' + esc(T('dlg.cancel')) + '</button>' +
       '  <button class="btn primary" id="ed-ok">' + esc(T('dlg.save')) + '</button></div>' +
-      '</div>';
-    document.body.appendChild(ov);
-    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+      '</div>');
     ov.querySelector('#ed-cancel').onclick = () => ov.remove();
     const val = id => ov.querySelector('#' + id).value.trim();
     ov.querySelector('#ed-ok').onclick = async () => {
@@ -1067,13 +1056,7 @@
       if (!body.newName) { toast(T('dlg.errNameEmpty'), true); return; }
       ov.querySelector('#ed-ok').disabled = true;
       try {
-        const r = await fetch(T0() + '/node', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-        const out = await r.json().catch(() => ({}));
-        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#ed-ok').disabled = false; return; }
+        const out = await apiSend(T0() + '/node', 'PUT', body);
         ov.remove();
         const renamed = out.newName !== out.oldName;
         if (renamed) renameKey(out.oldName, out.newName);
@@ -1094,24 +1077,18 @@
   // ── 删除节点（确认后删子树 + 清理落位）────────────────────────
 
   function confirmDelete(node) {
-    const ov = document.createElement('div');
-    ov.className = 'overlay';
-    ov.innerHTML =
+    const ov = openOverlay(
       '<div class="dialog">' +
       '  <h3>' + esc(Tf('dlg.delTitle', { name: node.name })) + '</h3>' +
       '  <div class="dlg-note">' + esc(T('dlg.delNote')) + '</div>' +
       '  <div class="actions"><button class="btn" id="del-cancel">' + esc(T('dlg.cancel')) + '</button>' +
       '  <button class="btn danger" id="del-ok">' + esc(T('tbl.delBtn')) + '</button></div>' +
-      '</div>';
-    document.body.appendChild(ov);
-    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+      '</div>');
     ov.querySelector('#del-cancel').onclick = () => ov.remove();
     ov.querySelector('#del-ok').onclick = async () => {
       ov.querySelector('#del-ok').disabled = true;
       try {
-        const r = await fetch(T0() + '/node?name=' + encodeURIComponent(node.name), { method: 'DELETE' });
-        const out = await r.json().catch(() => ({}));
-        if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#del-ok').disabled = false; return; }
+        const out = await apiSend(T0() + '/node?name=' + encodeURIComponent(node.name), 'DELETE', null);
         ov.remove();
         const removed = out.removed || [];
         for (const n of removed) {
@@ -1124,7 +1101,6 @@
           $('#detail').style.display = 'none';
           $('#detailEmpty').style.display = '';
         }
-        state.docCount = out.docCount;
         renderStats(out);
         toast(Tf('toast.delDone', { name: node.name, nodes: removed.length, docs: (out.docsRemoved || []).length }));
         await refreshNode(out.parent);
@@ -1163,7 +1139,7 @@
         .join('<span class="sep">▸</span>');
     let html =
       '<div class="d-head"><span class="d-name">' + esc(info.name) + '</span>' +
-      (info.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.choice' : 'tag.noul')) + '</span>' : '') +
+      (info.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.otherChoice' : 'tag.otherNoul')) + '</span>' : '') +
       '<span class="d-count">' + esc(Tf(isNode ? 'detail.subtreeDocs' : 'detail.leafDocs', { n: isNode ? info.docTotal : info.docs.length })) + '</span></div>' +
       '<div class="crumbs">' + crumbs + '</div>';
     if (info.yes || info.no) {
@@ -1179,7 +1155,7 @@
         html += '<div class="row">' +
             '<span class="icon" style="color:' + (c.leaf ? '#e8b64c' : '#5eead4') + '">' + (c.leaf ? '◇' : '◆') + '</span>' +
             '<span class="name"' + (c.leaf ? ' style="color:#f2d38b"' : '') + '>' + esc(c.name) + '</span>' +
-            (c.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.choice' : 'tag.noul')) + '</span>' : '') +
+            (c.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.otherChoice' : 'tag.otherNoul')) + '</span>' : '') +
             (c.leaf ? '<span class="badge' + (c.docCount ? '' : ' zero') + '">' + c.docCount + '</span>' : '') +
             (c.yes ? '<div class="crit">' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(c.yes) + '</div>' : '') +
             '</div>';
@@ -1289,7 +1265,6 @@
     try {
       const d = await api('/api/models?provider=' + encodeURIComponent(provider));
       state.allModels = d.models || [];
-      state.modelSource = d.source;
       sel.innerHTML = '';
       const ph = document.createElement('option');
       ph.value = '';
@@ -1334,8 +1309,7 @@
     if (!model) return;
     $('#model').disabled = true;
     try {
-      const out = await apiPost('/api/model', { provider, model });
-      state.backend = out.backend;
+      const out = await apiSend('/api/model', 'POST', { provider, model });
       toast(Tf('model.switched', { backend: out.backend, model: out.model }));
     } catch (e) {
       toast(T('model.switchFail') + ': ' + e, true);
@@ -1344,23 +1318,44 @@
     $('#model').disabled = false;
   }
 
-  // ── 控制台（add 落位 / search 检索，文本触发；add 多行 = 批量导入）──
+  // ── 控制台（add 落位：单条/批量子模式 / search 检索；批量空行分隔，统一走 addBatch）──
 
   let consoleMode = 'add';
+  let addSub = 'single';   // add 子模式：single 单条（整框一条） / batch 批量（空行分隔）
   function setMode(m) {
     consoleMode = m;
-    for (const b of document.querySelectorAll('#tab-quest .q-modes .tab')) {
+    for (const b of document.querySelectorAll('#q-mainmodes .tab')) {
       b.classList.toggle('active', b.dataset.mode === m);
     }
-    $('#q-id-row').style.display = m === 'add' ? '' : 'none';
-    $('#q-go').textContent = T(m === 'add' ? 'q.goAdd' : 'q.goSearch');
-    $('#q-hint').textContent = T(m === 'add' ? 'q.hintAdd' : 'q.hintSearch');
-    $('#q-input').placeholder = T(m === 'add'
-        ? (state.mode === 'choice' ? 'q.phAddChoice' : 'q.phAddNoul')
-        : 'q.phSearch');
+    $('#q-submodes').style.display = m === 'add' ? '' : 'none';
+    $('#q-id-row').style.display = m === 'add' && addSub === 'single' ? '' : 'none';
+    refreshConsoleBar();
   }
-  for (const b of document.querySelectorAll('#tab-quest .q-modes .tab')) {
+  function setAddSub(s) {
+    addSub = s;
+    for (const b of document.querySelectorAll('#q-submodes .tab')) {
+      b.classList.toggle('active', b.dataset.sub === s);
+    }
+    $('#q-id-row').style.display = s === 'single' && consoleMode === 'add' ? '' : 'none';
+    refreshConsoleBar();
+  }
+  // 按钮 / 提示 / 占位符随主模式 + add 子模式刷新（语言切换时 applyI18n 也会重调）
+  function refreshConsoleBar() {
+    $('#q-go').textContent = T(consoleMode === 'add' ? 'q.goAdd' : 'q.goSearch');
+    if (consoleMode !== 'add') {
+      $('#q-hint').textContent = T('q.hintSearch');
+      $('#q-input').placeholder = T('q.phSearch');
+      return;
+    }
+    $('#q-hint').textContent = T(addSub === 'single' ? 'q.hintAddSingle' : 'q.hintBatch');
+    $('#q-input').placeholder = T(addSub === 'batch' ? 'q.phBatch'
+        : (state.mode === 'choice' ? 'q.phAddChoice' : 'q.phAddNoul'));
+  }
+  for (const b of document.querySelectorAll('#q-mainmodes .tab')) {
     b.onclick = () => setMode(b.dataset.mode);
+  }
+  for (const b of document.querySelectorAll('#q-submodes .tab')) {
+    b.onclick = () => setAddSub(b.dataset.sub);
   }
 
   async function runConsole() {
@@ -1370,18 +1365,21 @@
     out.innerHTML = '<div class="loading">' + esc(T(consoleMode === 'add' ? 'q.loadingAdd' : 'q.loadingQuest')) + '</div>';
     try {
       if (consoleMode === 'add') {
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length);
-        if (lines.length > 1) {          // 多行 = 批量导入（每行一条；文档 ID 字段不适用，ID 自动生成）
-          const docs = lines.map(l => ({ content: l }));
-          renderAddBatch(await apiPost(T0() + '/addBatch', { docs }));
-        } else {
-          const body = { content: lines[0] };
+        let docs;
+        if (addSub === 'batch') {          // 批量：空行分隔；段内换行属于该条内容，ID 自动生成
+          docs = text.split(/\n[ \t]*\n/).map(s => s.trim()).filter(s => s.length)
+              .map(content => ({ content }));
+        } else {                          // 单条：整框为一条，换行属于内容；ID 可指定
+          const doc = { content: text };
           const idv = $('#q-doc-id').value.trim();
-          if (idv) body.id = idv;
-          renderAdd(await apiPost(T0() + '/add', body));
+          if (idv) doc.id = idv;
+          docs = [doc];
         }
+        const d = await apiSend(T0() + '/addBatch', 'POST', { docs });
+        if (docs.length === 1 && !(d.failed || []).length) renderAdd(d);
+        else renderAddBatch(d);
       } else {
-        renderQuest(await apiPost(T0() + '/quest', { query: text }));
+        renderQuest(await apiSend(T0() + '/quest', 'POST', { query: text }));
       }
     } catch (e) {
       out.innerHTML = '<div class="error">' + esc(e) + '</div>';
@@ -1393,17 +1391,17 @@
   });
 
   // 判定轨迹一步：choice 模式显示胜出选项与置信度，noul 模式显示各分支 P(yes)
+  // probs 概率表 → "name 0.87 · name 0.05" 形式
+  const fmtProbs = s => Object.keys(s.probs || {})
+      .map(k => k + ' ' + (s.probs[k] == null ? '—' : (+s.probs[k]).toFixed(2))).join(' · ');
+
   function stepLine(s) {
     if (s.choice != null) {
       let t = '✓ ' + esc(s.choice) + ' · ' + (s.confidence != null ? (+s.confidence).toFixed(2) : '—');
-      const pk = Object.keys(s.probs || {});
-      if (pk.length > 1) {
-        t += ' <span class="dim">· ' + esc(pk.map(k => k + ' ' + (s.probs[k] == null ? '—' : (+s.probs[k]).toFixed(2))).join(' · ')) + '</span>';
-      }
+      if (Object.keys(s.probs || {}).length > 1) t += ' <span class="dim">· ' + esc(fmtProbs(s)) + '</span>';
       return t;
     }
-    return esc(Object.keys(s.probs || {})
-        .map(k => k + ' ' + (s.probs[k] == null ? '—' : (+s.probs[k]).toFixed(2))).join(' · '));
+    return esc(fmtProbs(s));
   }
 
   function traceHtml(steps) {
@@ -1415,18 +1413,24 @@
     return html + '</details>';
   }
 
-  function renderAdd(d) {
-    let html = '<div class="q-sub">' + esc(Tf('add.done', { id: d.id })) + '</div>';
-    html += d.leaves.length
-        ? '<div>' + d.leaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
+  // 已展开的落位叶原位刷新计数（落位 / 批量导入后）
+  function refreshLeafRows(leaves) {
+    for (const lf of leaves) {
+      if (state.wraps[lf]) refreshNode(lf).catch(() => {});
+    }
+  }
+
+  function renderAdd(d) {   // d = addBatch 响应（单条也走 addBatch，取 results[0]）
+    const r = (d.results || [])[0] || {};
+    let html = '<div class="q-sub">' + esc(Tf('add.done', { id: r.id })) + '</div>';
+    html += (r.leaves || []).length
+        ? '<div>' + r.leaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
         : '<div class="q-none">' + esc(T(state.mode === 'choice' ? 'add.noLeafChoice' : 'add.noLeafNoul')) + '</div>';
-    html += traceHtml(d.steps);
+    html += traceHtml(r.steps || []);
     html += '<div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
     $('#q-out').innerHTML = html;
     renderStats(d);
-    for (const lf of d.leaves) {          // 已展开的落位叶原位刷新计数
-      if (state.wraps[lf]) refreshNode(lf).catch(() => {});
-    }
+    refreshLeafRows(r.leaves || []);
   }
 
   function renderAddBatch(d) {
@@ -1443,9 +1447,7 @@
     renderStats(d);
     const hitLeaves = new Set();
     for (const r of (d.results || [])) (r.leaves || []).forEach(l => hitLeaves.add(l));
-    for (const lf of hitLeaves) {
-      if (state.wraps[lf]) refreshNode(lf).catch(() => {});
-    }
+    refreshLeafRows(hitLeaves);
   }
 
   function renderQuest(d) {
@@ -1454,7 +1456,7 @@
     html += d.matchedLeaves.length
         ? '<div>' + d.matchedLeaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
         : '<div class="q-none">' + esc(Tf(state.mode === 'choice'
-            ? 'quest.noHitChoice' : 'quest.noHitNoul', { gate: state.choiceGate })) + '</div>';
+            ? 'quest.noHitChoice' : 'quest.noHitNoul', { gate: gateVal() })) + '</div>';
     html += '<div class="q-sub">' + esc(Tf('quest.rank', { n: d.ranked.length })) +
         '<span class="dim">' + esc(T(state.mode === 'choice' ? 'quest.scoreChoice' : 'quest.scoreNoul')) + '</span></div>';
     html += d.ranked.length

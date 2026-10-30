@@ -134,7 +134,7 @@
 
 批量导入：`docs` 里每条独立落位，**单条失败不牵连整批**，全部结束后统一落盘一次。**入参** `{docs:[{id?, content}…]}`，单次上限 500 条（超出 400）；条目缺 `content` 记入 `failed` 继续。
 
-**出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves}], stats}`。
+**出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves, steps}], stats}`。
 
 **错误**：400 缺 docs / docs 空 / 超 500 条；单条判定失败进 `failed` 而非整体报错。
 
