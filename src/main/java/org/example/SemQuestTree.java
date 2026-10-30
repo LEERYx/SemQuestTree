@@ -19,14 +19,15 @@ import java.util.Map;
  * 一叶可多枝（noul 多选落位）。判定推迟到查询时——add 是内容下行，quest 是查询下行，
  * 读写同构，同一套路由代码，仅 V2 规则文本不同。
  *
- * <p>每层固定一个「都不相关」兜底叶（name + {@value #OTHER_SUFFIX}）：兜底<b>不参与判定请求</b>
- * （2026-10-27 拍板，省一题 token）——add 时该层无真实子判据过门即落兜底叶（保证必落位）；
- * quest 时跳过兜底枝。
+ * <p>每层固定一个「都不相关」兜底叶（name + {@value #OTHER_SUFFIX}）：noul 判定请求只含真实子判据
+ * （兜底不出题）；choice 判定每层显式含兜底选项（归一化逃逸口）。落位与检索同条件镜像——
+ * add 时该层无真实子判据过门即落兜底叶（保证必落位），quest 时该层无真实子判据过门即命中兜底叶；
+ * choice 检索单路径，胜出兜底项即止（不命中兜底叶）。
  *
  * <p>层级分支由 schema JSON 预制（类似 MySQL 建表的字段声明）。
  * 判据语言随子树：节点可自带 ruleAdd/ruleSearch 覆盖本子树的规则文本，缺省继承全局；
  * 判据为事件级原子断言，yes = "是"侧断言，no = "否"侧断言（双边判据方言）。
- * 兜底叶不设判据（不参与任何判定请求，判据字段无意义）。
+ * 兜底叶不设判据（choice 以固定文案作其选项描述，可经 prompt.choice.other 调整）。
  *
  * <pre>
  *   SemQuestTree tree = SemQuestTree.load(Path.of("driver-intent-schema.json"), new JevBackend(cfg, 30000), 0.7);
@@ -41,6 +42,134 @@ public final class SemQuestTree {
 
     /** choice 模式下兜底选项的固定描述（参与归一化的显式逃逸口）。 */
     public static final String OTHER_OPTION_DESC = "以上都不符合";
+
+    /** 树级默认规则（schema/建表未给规则时的兜底文本；semquest.properties 的 prompt.rule.* 可覆盖）。 */
+    public static final String DEFAULT_RULE_ADD = "判定输入内容与哪个分支的判据相符。";
+    public static final String DEFAULT_RULE_SEARCH = "判断查询内容在寻找哪个分支下的内容。";
+
+    /** 判定任务侧别：取 add（落位/回填）还是 search（检索）那套提示词模板。 */
+    public enum Task { ADD, SEARCH }
+
+    // ── 判定提示词（系统侧组装文案，semquest.properties 热载）───────
+
+    /**
+     * 系统侧判定提示词：结构化判定方言里由服务组装的文案。判据 yes/no 与规则文本归树（节点数据），不在这里。
+     * 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文；空值回内置默认。
+     * add（落位）与 search（检索）各一套，对应配置键：prompt.noul.{add,search}.instructions、
+     * prompt.noul.{add,search}.criterion、prompt.choice.{add,search}.{root,node}、prompt.choice.other。
+     * criterion 在判定前包裹判据文本（add 默认恒等 {yes}；search 默认包检索框架），
+     * 使「所有悲伤的话」这类泛查询能过机制描述型判据——框架落在模型真正读的判据字段里。
+     * noul instructions 仅 jev / respan 方言下发；openrouter（非 respan）与百炼下发的是判据文本（含包裹），此模板不影响它们。
+     */
+    public static final class Prompts {
+
+        private static final String D_NOUL_INSTRUCTIONS = "{name}";
+        private static final String D_NOUL_ADD_CRITERION = "{yes}";
+        private static final String D_NOUL_SEARCH_CRITERION = "该查询的结果应包含满足以下描述的内容：{yes}";
+        private static final String D_ROOT_QUESTION = "这句话最符合哪一类？";
+        private static final String D_NODE_QUESTION = "{node}";
+
+        /** noul 题目 instructions 模板（{name}=分支名）。 */
+        public final String noulAddInstructions;
+        public final String noulSearchInstructions;
+        /** noul 判据包裹模板（{yes}=判据原文、{name}=分支名；add 默认恒等）。 */
+        public final String noulAddCriterion;
+        public final String noulSearchCriterion;
+        /** choice 根层问句。 */
+        public final String choiceAddRoot;
+        /** choice 子层问句模板（{node}=层节点名）。 */
+        public final String choiceAddNode;
+        public final String choiceSearchRoot;
+        public final String choiceSearchNode;
+        /** choice 兜底选项描述（criteria 里 X_OTHER 的文案）。 */
+        public final String choiceOtherOption;
+
+        /** 全内置默认（未配置任何 prompt.* 键）。 */
+        public Prompts() {
+            this(null, null, null, null, null, null, null, null, null);
+        }
+
+        public Prompts(String noulAddInstructions, String noulSearchInstructions,
+                       String noulAddCriterion, String noulSearchCriterion,
+                       String choiceAddRoot, String choiceAddNode,
+                       String choiceSearchRoot, String choiceSearchNode,
+                       String choiceOtherOption) {
+            this.noulAddInstructions = blank(noulAddInstructions) ? D_NOUL_INSTRUCTIONS : noulAddInstructions.trim();
+            this.noulSearchInstructions = blank(noulSearchInstructions) ? D_NOUL_INSTRUCTIONS : noulSearchInstructions.trim();
+            this.noulAddCriterion = blank(noulAddCriterion) ? D_NOUL_ADD_CRITERION : noulAddCriterion.trim();
+            this.noulSearchCriterion = blank(noulSearchCriterion) ? D_NOUL_SEARCH_CRITERION : noulSearchCriterion.trim();
+            this.choiceAddRoot = blank(choiceAddRoot) ? D_ROOT_QUESTION : choiceAddRoot.trim();
+            this.choiceAddNode = blank(choiceAddNode) ? D_NODE_QUESTION : choiceAddNode.trim();
+            this.choiceSearchRoot = blank(choiceSearchRoot) ? D_ROOT_QUESTION : choiceSearchRoot.trim();
+            this.choiceSearchNode = blank(choiceSearchNode) ? D_NODE_QUESTION : choiceSearchNode.trim();
+            this.choiceOtherOption = blank(choiceOtherOption) ? OTHER_OPTION_DESC : choiceOtherOption.trim();
+        }
+
+        /** noul 题目 instructions：按任务侧别取模板，{name} 替换为分支名。 */
+        public String noulInstructions(Task task, String name) {
+            String tpl = task == Task.ADD ? noulAddInstructions : noulSearchInstructions;
+            return tpl.replace("{name}", name);
+        }
+
+        /** noul 判据文本：按任务侧别取包裹模板，{yes} 替换判据原文、{name} 替换分支名（add 默认恒等，search 默认包检索框架）。 */
+        public String criterion(Task task, String yes, String name) {
+            String tpl = task == Task.ADD ? noulAddCriterion : noulSearchCriterion;
+            return tpl.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
+        }
+
+        /** choice 问句：根层用 root 问句，子层模板 {node} 替换层节点名。 */
+        public String choiceQuestion(Task task, String node) {
+            if ("ROOT".equals(node)) return task == Task.ADD ? choiceAddRoot : choiceSearchRoot;
+            String tpl = task == Task.ADD ? choiceAddNode : choiceSearchNode;
+            return tpl.replace("{node}", node);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (!(o instanceof Prompts)) return false;
+            Prompts p = (Prompts) o;
+            return noulAddInstructions.equals(p.noulAddInstructions)
+                    && noulSearchInstructions.equals(p.noulSearchInstructions)
+                    && noulAddCriterion.equals(p.noulAddCriterion)
+                    && noulSearchCriterion.equals(p.noulSearchCriterion)
+                    && choiceAddRoot.equals(p.choiceAddRoot)
+                    && choiceAddNode.equals(p.choiceAddNode)
+                    && choiceSearchRoot.equals(p.choiceSearchRoot)
+                    && choiceSearchNode.equals(p.choiceSearchNode)
+                    && choiceOtherOption.equals(p.choiceOtherOption);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = noulAddInstructions.hashCode();
+            h = h * 31 + noulSearchInstructions.hashCode();
+            h = h * 31 + noulAddCriterion.hashCode();
+            h = h * 31 + noulSearchCriterion.hashCode();
+            h = h * 31 + choiceAddRoot.hashCode();
+            h = h * 31 + choiceAddNode.hashCode();
+            h = h * 31 + choiceSearchRoot.hashCode();
+            h = h * 31 + choiceSearchNode.hashCode();
+            return h * 31 + choiceOtherOption.hashCode();
+        }
+
+        private static boolean blank(String s) {
+            return s == null || s.trim().isEmpty();
+        }
+    }
+
+    /** 当前判定提示词（全表共用一份配置值；semquest.properties 保存即热载）。 */
+    private volatile Prompts prompts = new Prompts();
+
+    public Prompts prompts() {
+        return prompts;
+    }
+
+    public void setPrompts(Prompts p) {
+        if (p != null) {
+            this.prompts = p;
+            bustQuestCache();   // 判定语义变了，缓存里的旧报告全部作废
+        }
+    }
 
     // ── 结构 ────────────────────────────────────────────────────────
 
@@ -128,6 +257,8 @@ public final class SemQuestTree {
         public final List<Step> steps = new ArrayList<Step>();
         public final List<String> matchedLeaves = new ArrayList<String>();
         public final List<RankedDoc> ranked = new ArrayList<RankedDoc>();
+        /** true = 查询缓存直出（零模型调用，steps 为首次慢路轨迹的原样复放）；粘性——条目命中即置位。 */
+        public boolean fast = false;
         public double pathScore = 1.0d;
 
         QuestReport(String query) {
@@ -157,13 +288,24 @@ public final class SemQuestTree {
     private volatile double choiceGate;
     /** true = choice 单选路由树（每层一题归一化选一支）；false = noul 多选树（默认）。 */
     private final boolean choiceMode;
-    private final String ruleAdd;
-    private final String ruleSearch;
+    // 树级规则非 final：prompt.rule.* 热载可置换仍等于旧默认文本的表（自定义文本不动）
+    private volatile String ruleAdd;
+    private volatile String ruleSearch;
     private final Map<String, Doc> docIndex = new LinkedHashMap<String, Doc>();
 
     private int requests = 0;
     private long totalIn = 0, totalOut = 0, totalLatency = 0;
     private double totalCost = 0.0;
+
+    // ── 查询结果缓存（LFU）：同款查询零模型直返 ─────────────────────
+
+    /** 查询原文 → 慢路产出的完整报告。accessOrder=true：迭代序=最久未用在前，淘汰时同频取最旧。 */
+    private final LinkedHashMap<String, QuestReport> questCache =
+            new LinkedHashMap<String, QuestReport>(64, 0.75f, true);
+    /** 各条目命中次数：调用最多越不易淘汰；新条目记 1。 */
+    private final Map<String, Integer> questCacheHits = new LinkedHashMap<String, Integer>();
+    /** 容量上限（0=关闭）；semquest.properties 的 questCacheSize 热载应用。仅内存，重启从零攒。 */
+    private volatile int questCacheCap = 0;
 
     private SemQuestTree(SemNode root, DecisionBackend backend, double gate,
                          String ruleAdd, String ruleSearch) {
@@ -208,9 +350,9 @@ public final class SemQuestTree {
                 : (m.get("gate") instanceof Number ? ((Number) m.get("gate")).doubleValue() : gateDefault);
         double choiceGate = m.get("choiceGate") instanceof Number ? ((Number) m.get("choiceGate")).doubleValue() : 0.6d;
         String ruleAdd = optText(m, "ruleAdd");
-        if (ruleAdd == null) ruleAdd = "判定输入内容与哪个分支的判据相符。";
+        if (ruleAdd == null) ruleAdd = DEFAULT_RULE_ADD;
         String ruleSearch = optText(m, "ruleSearch");
-        if (ruleSearch == null) ruleSearch = "判断查询内容在寻找哪个分支下的内容。";
+        if (ruleSearch == null) ruleSearch = DEFAULT_RULE_SEARCH;
         if (!(m.get("root") instanceof Map)) {
             throw new IOException("schema 缺 root 节点: " + source);
         }
@@ -241,7 +383,8 @@ public final class SemQuestTree {
                 if (o instanceof Map) children.add(parseNode((Map<?, ?>) o));
             }
         }
-        return new SemNode(name, yes, no, false, children, ruleAdd, ruleSearch);
+        SemNode node = new SemNode(name, yes, no, false, children, ruleAdd, ruleSearch);
+        return node;
     }
 
     /** 可选字符串字段：存在且非空白才返回，否则 null。 */
@@ -254,6 +397,7 @@ public final class SemQuestTree {
 
     /** 把一条正文按预制分支分类到叶。noul：无真实子过门落兜底；choice：单选下行，选中兜底项或低于采纳线落兜底。 */
     public AddReport add(String docId, String content) throws IOException {
+        bustQuestCache();   // 落位变了，查询缓存全部作废
         Doc prev = docIndex.get(docId);   // 同 id 重复 add：先摘旧指针再落位（控制台可反复改写同一条）
         if (prev != null) {
             for (String ln : prev.leaves) {
@@ -282,7 +426,7 @@ public final class SemQuestTree {
         final String effRule = node.ruleAdd != null ? node.ruleAdd : rule;   // 子树规则覆盖
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
         for (SemNode c : node.children) {
-            qs.put(c.name, new NoulSpec(c.name, c.yes, c.no));
+            qs.put(c.name, new NoulSpec(prompts.noulInstructions(Task.ADD, c.name), prompts.criterion(Task.ADD, c.yes, c.name), c.no));
         }
         // 兜底叶不进请求
         NoulReply r = ask(node.name, content, effRule, qs, rep.steps);
@@ -326,7 +470,7 @@ public final class SemQuestTree {
             return;
         }
         final String effRule = node.ruleAdd != null ? node.ruleAdd : rule;
-        ChoicePick pick = askChoice(node, content, effRule, rep.steps);
+        ChoicePick pick = askChoice(node, content, effRule, Task.ADD, rep.steps);
         if (pick == null) {   // 选中兜底项或低于采纳线 → 落本层兜底叶（保证必落位）
             SemNode other = otherLeaf(node);
             other.docs.add(doc);
@@ -340,17 +484,18 @@ public final class SemQuestTree {
     /**
      * choice 层判定：criteria = 真实子节点（描述=yes 判据或名字）+ 兜底叶显式选项（归一化逃逸口）。
      * 胜出兜底项或 confidence < choiceGate 返回 null（调用方落兜底）；否则返回胜出子节点与概率。
+     * 问句按任务侧别取模板：add（落位）与 search（检索）各一套（prompt.choice.add.* / prompt.choice.search.*）。
      */
-    private ChoicePick askChoice(SemNode node, String content, String rule, List<Step> steps)
+    private ChoicePick askChoice(SemNode node, String content, String rule, Task task, List<Step> steps)
             throws IOException {
         LinkedHashMap<String, String> criteria = new LinkedHashMap<String, String>();
         for (SemNode c : node.children) {
             criteria.put(c.name, c.yes != null && !c.yes.trim().isEmpty() ? c.yes : c.name);
         }
         SemNode other = otherLeaf(node);
-        criteria.put(other.name, OTHER_OPTION_DESC);
+        criteria.put(other.name, prompts.choiceOtherOption);
 
-        String question = "ROOT".equals(node.name) ? "这句话最符合哪一类？" : node.name;
+        String question = prompts.choiceQuestion(task, node.name);
         NoulReply r = backend.choice(content, rule, question, criteria);
         steps.add(new Step(node.name, r));
         requests++;
@@ -387,8 +532,19 @@ public final class SemQuestTree {
 
     // ── quest：查询原文下行取叶 ─────────────────────────────────────
 
-    /** 自然语言检索：查询下行收集命中叶，取叶上 Doc 并集排序。noul 分数=命中叶数；choice=路径胜出概率连乘。 */
+    /**
+     * 自然语言检索：查询下行收集命中叶，取叶上 Doc 并集排序。noul 分数=命中叶数；choice=路径胜出概率连乘。
+     * 查询缓存开启时同款查询（原文完全一致）零模型直返；任何表变更（add/grow/edit/remove/双门控）清空缓存。
+     */
     public QuestReport quest(String query) throws IOException {
+        if (questCacheCap > 0) {
+            QuestReport cached = questCache.get(query);
+            if (cached != null) {
+                questCacheHits.put(query, questCacheHits.get(query) + 1);
+                cached.fast = true;   // 缓存直出标记（粘性：条目此后一直走缓存）
+                return cached;
+            }
+        }
         QuestReport rep = new QuestReport(query);
         LinkedHashSet<SemNode> matched = new LinkedHashSet<SemNode>();
         if (choiceMode) {
@@ -421,6 +577,7 @@ public final class SemQuestTree {
             double s = choiceMode ? rep.pathScore : e.getValue().size();
             rep.ranked.add(new RankedDoc(e.getKey().id, s, e.getValue()));
         }
+        if (questCacheCap > 0) cachePut(query, rep);
         return rep;
     }
 
@@ -432,7 +589,7 @@ public final class SemQuestTree {
             return;
         }
         final String effRule = node.ruleSearch != null ? node.ruleSearch : rule;   // 子树规则覆盖
-        ChoicePick pick = askChoice(node, query, effRule, rep.steps);
+        ChoicePick pick = askChoice(node, query, effRule, Task.SEARCH, rep.steps);
         if (pick == null) return;   // 选中兜底或低于采纳线：检索到此为止（不落兜底）
         descendQuestChoice(pick.node, query, matched, rep, effRule, pathProb * pick.prob);
     }
@@ -446,23 +603,104 @@ public final class SemQuestTree {
         final String effRule = node.ruleSearch != null ? node.ruleSearch : rule;   // 子树规则覆盖
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
         for (SemNode c : node.children) {   // 兜底叶不参与检索
-            qs.put(c.name, new NoulSpec(c.name, c.yes, c.no));
+            // 判据包检索框架（search 侧模板）：框架落在模型读的判据字段里，泛查询才能过机制描述型判据
+            qs.put(c.name, new NoulSpec(prompts.noulInstructions(Task.SEARCH, c.name), prompts.criterion(Task.SEARCH, c.yes, c.name), null));
         }
         NoulReply r = ask(node.name, query, effRule, qs, steps);
+        boolean any = false;
         for (SemNode c : node.children) {
             Double p = r.probs.get(c.name);
             if (p != null && p >= gate) {
+                any = true;
                 descendQuest(c, query, matched, steps, effRule);
             }
         }
+        if (!any && node.otherLeaf != null) {
+            matched.add(node.otherLeaf);   // 与落位镜像：本层无真实判据过门 → 命中该层兜底叶（add 同条件落位）
+        }
+    }
+
+    // ── 查询缓存（LFU）：按命中次数排序淘汰 ────────────────────────
+
+    /** 缓存未命中后的慢路结果入池；超容量按「命中次数最少优先、同次数最久未用优先」淘汰。 */
+    private void cachePut(String query, QuestReport rep) {
+        if (questCache.containsKey(query)) return;   // 变更清空后同查询重建，不会走到
+        questCache.put(query, rep);
+        questCacheHits.put(query, 1);
+        while (questCache.size() > questCacheCap) cacheEvict();
+    }
+
+    /** 淘汰一个条目：命中次数最少者出局；同次数取最久未用（accessOrder 迭代序最前）。 */
+    private void cacheEvict() {
+        String victim = null;
+        int min = Integer.MAX_VALUE;
+        for (String k : questCache.keySet()) {
+            int h = questCacheHits.get(k);
+            if (h < min) {
+                min = h;
+                victim = k;
+            }
+        }
+        if (victim != null) {
+            questCache.remove(victim);
+            questCacheHits.remove(victim);
+        }
+    }
+
+    /** 任何表变更（add / 增长 / 修改 / 删除 / 双门控调整）后缓存结果不再可信，整池清空。 */
+    private void bustQuestCache() {
+        if (!questCache.isEmpty()) {
+            questCache.clear();
+            questCacheHits.clear();
+        }
+    }
+
+    /** 当前缓存容量上限（0=关闭）。 */
+    public int questCacheCap() {
+        return questCacheCap;
+    }
+
+    /** 设置查询缓存容量（热载调用）：0=关闭并清空；缩容时立即按 LFU 淘汰到新上限。 */
+    public void setQuestCacheCap(int n) {
+        this.questCacheCap = Math.max(0, n);
+        while (questCache.size() > questCacheCap) cacheEvict();
     }
 
     // ── 公共 ────────────────────────────────────────────────────────
+
+    /**
+     * 热载置换树级默认规则（prompt.rule.*）：仅当当前规则仍等于 old 文本时替换——按旧配置自定义过的树不动，
+     * 节点级 ruleAdd/ruleSearch 覆盖不受影响。发生置换即清查询缓存（规则变了旧报告不可信）。返回是否置换。
+     */
+    public boolean swapDefaultRules(String oldAdd, String newAdd, String oldSearch, String newSearch) {
+        boolean changed = false;
+        if (oldAdd != null && newAdd != null && !oldAdd.equals(newAdd) && oldAdd.equals(ruleAdd)) {
+            this.ruleAdd = newAdd;
+            changed = true;
+        }
+        if (oldSearch != null && newSearch != null && !oldSearch.equals(newSearch) && oldSearch.equals(ruleSearch)) {
+            this.ruleSearch = newSearch;
+            changed = true;
+        }
+        if (changed) bustQuestCache();
+        return changed;
+    }
+
+    /** 当前树级 add 规则文本（可视化/调试读取用）。 */
+    public String ruleAdd() {
+        return ruleAdd;
+    }
+
+    /** 当前树级 search 规则文本（可视化/调试读取用）。 */
+    public String ruleSearch() {
+        return ruleSearch;
+    }
 
     /** 运行时调整门控（0 < gate ≤ 1），只影响其后的 add / quest / grow 判定，不重排已落位数据。 */
     public void setGate(double g) {
         if (!(g > 0 && g <= 1)) throw new IllegalArgumentException("门控须在 (0, 1] 区间: " + g);
         this.gate = g;
+        bustQuestCache();   // 门变了，缓存结果与重跑慢路不再一致
     }
 
     /** 当前门控值（热载线程读取比对用）。 */
@@ -474,6 +712,7 @@ public final class SemQuestTree {
     public void setChoiceGate(double g) {
         if (!(g > 0 && g <= 1)) throw new IllegalArgumentException("采纳线须在 (0, 1] 区间: " + g);
         this.choiceGate = g;
+        bustQuestCache();
     }
 
     /** 当前 choice 采纳线。 */
@@ -658,6 +897,57 @@ public final class SemQuestTree {
         if (n.otherLeaf != null) collectDocs(n.otherLeaf, acc);
     }
 
+    // ── 节点直取：指定节点返回子树全部叶内容（零模型调用） ──────────
+
+    /** 节点直取的一条文档：id + 正文 + 落位叶名列表（全量叶指针，子树外的落位叶也可见）。 */
+    public static final class NodeDoc {
+        public final String id;
+        public final String content;
+        public final List<String> viaLeaves;
+
+        NodeDoc(Doc d) {
+            this.id = d.id;
+            this.content = d.content;
+            this.viaLeaves = new ArrayList<String>(d.leaves);
+        }
+    }
+
+    /**
+     * 节点直取报告：指定节点的子树内全部叶的落位内容（叶与内部节点通用）。
+     * 文档按叶 DFS 顺序去重（一 Doc 多叶只出一次）；兜底叶内容包含在内，viaLeaves 露出 X_OTHER 后缀可辨。
+     */
+    public static final class NodeDocs {
+        public final String node;
+        public final List<String> leaves;   // 子树叶名（DFS 序，含兜底叶）
+        public final List<NodeDoc> docs;
+
+        NodeDocs(String node, List<String> leaves, List<NodeDoc> docs) {
+            this.node = node;
+            this.leaves = leaves;
+            this.docs = docs;
+        }
+    }
+
+    /** 指定节点子树内全部叶的落位内容（零模型调用，未知节点抛 400）。 */
+    public NodeDocs nodeDocs(String nodeName) {
+        SemNode n = find(root, nodeName);
+        if (n == null) throw new IllegalArgumentException("未知节点: " + nodeName);
+        List<String> leaves = new ArrayList<String>();
+        collectLeafNames(n, leaves);
+        List<NodeDoc> docs = new ArrayList<NodeDoc>();
+        for (Doc d : docsUnder(n)) docs.add(new NodeDoc(d));
+        return new NodeDocs(n.name, leaves, docs);
+    }
+
+    private static void collectLeafNames(SemNode n, List<String> out) {
+        if (n.isLeaf()) {
+            out.add(n.name);
+            return;
+        }
+        for (SemNode c : n.children) collectLeafNames(c, out);
+        if (n.otherLeaf != null) out.add(n.otherLeaf.name);
+    }
+
     // ── 增长：补层 + 存量回填 ───────────────────────────────────────
 
     /** 增长报告：新判据下受影响存量的逐条重判结果。 */
@@ -706,6 +996,7 @@ public final class SemQuestTree {
      * 选中新选项且达采纳线迁入，否则留/落兜底。no 判据留空时自动生成（仅 noul）。
      */
     public GrowReport growNode(String parent, String name, String yes, String no) throws IOException {
+        bustQuestCache();   // 结构变了，查询缓存全部作废
         if (!choiceMode && (yes == null || yes.trim().isEmpty())) {
             throw new IllegalArgumentException("yes 判据不可为空");
         }
@@ -735,7 +1026,7 @@ public final class SemQuestTree {
         if (choiceMode) {
             List<Step> discarded = new ArrayList<Step>();   // 回填轨迹不进任何报告，账单照记
             for (Doc d : affected) {
-                ChoicePick pick = askChoice(p, d.content, effRule, discarded);
+                ChoicePick pick = askChoice(p, d.content, effRule, Task.ADD, discarded);
                 boolean pass = pick != null && pick.node == target;
                 if (differentiate) {
                     p.docs.remove(d);
@@ -795,7 +1086,7 @@ public final class SemQuestTree {
     /** 单题重判（增长回填用），计入账单。规则取父子树的有效规则（有覆盖用覆盖，无则全局）。 */
     private double judgeOne(String content, String name, String yes, String no, String rule) throws IOException {
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
-        qs.put(name, new NoulSpec(name, yes, no));
+        qs.put(name, new NoulSpec(prompts.noulInstructions(Task.ADD, name), prompts.criterion(Task.ADD, yes, name), no));
         NoulReply r = backend.noul(content, rule, qs);
         requests++;
         totalIn += r.inputTokens;
@@ -829,6 +1120,7 @@ public final class SemQuestTree {
      * yes 缺省视为不改；no 留空且 yes 有新值时按语言自动生成否定侧。
      */
     public EditReport editNode(String name, String newName, String yes, String no) {
+        bustQuestCache();   // 判据/名字变了，缓存结果与重跑慢路不再一致
         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("节点名不可为空");
         if (root.name.equals(name.trim())) throw new IllegalArgumentException("根节点不可修改");
         SemNode n = find(root, name.trim());
@@ -894,6 +1186,7 @@ public final class SemQuestTree {
      * 根节点与兜底叶不可直接删除（兜底叶随父节点连带移除）。
      */
     public RemoveReport removeNode(String name) {
+        bustQuestCache();   // 结构变了，查询缓存全部作废
         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("节点名不可为空");
         String trimmed = name.trim();
         if (trimmed.equals(root.name)) throw new IllegalArgumentException("根节点不可删除");

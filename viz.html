@@ -75,6 +75,10 @@
     font-size: 11.5px; color: #5eead4; background: #12241f;
     border: 1px solid #245743; border-radius: 5px; padding: 0 7px; margin-bottom: 7px; }
   .doc-content { font-size: 13.5px; color: #c9d2de; }
+  .doc-via { margin-top: 7px; font-size: 11.5px; color: #5b6472; }
+  .d-more { text-align: center; padding: 8px 0; font-size: 12.5px; color: #5eead4;
+    cursor: pointer; border: 1px dashed #245743; border-radius: 8px; }
+  .d-more:hover { border-color: #35a08a; background: #101a18; }
   .menu { position: fixed; background: #161b24; border: 1px solid #2c3648;
     border-radius: 8px; padding: 4px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
   .menu div { padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
@@ -125,6 +129,9 @@
   .chip { display: inline-block; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
     color: #f2d38b; background: #241d10; border: 1px solid #57431f; border-radius: 99px;
     padding: 1px 10px; margin: 0 6px 6px 0; }
+  .fast-badge { display: inline-block; font-size: 11px; color: #5eead4;
+    background: #173229; border: 1px solid #245743; border-radius: 99px;
+    padding: 1px 10px; margin-left: 8px; letter-spacing: 0; }
   .q-rank { background: #12161d; border: 1px solid #232a36; border-radius: 10px;
     padding: 11px 14px; margin-bottom: 8px; display: flex; gap: 12px; align-items: flex-start; }
   .q-score { font-family: ui-monospace, Menlo, monospace; font-size: 15px; font-weight: 700;
@@ -203,20 +210,20 @@
 </head>
 <body>
 <header>
-  <button class="btn" id="backBtn" style="display:none">‹ 全部表</button>
+  <button class="btn" id="backBtn" style="display:none" data-i18n="back.allTables">‹ 全部表</button>
   <div class="title">问义树<span class="en">SemQuestTree</span></div>
   <span class="tbl-name" id="tblName" style="display:none"></span>
   <span class="mode-tag" id="tblMode" style="display:none"></span>
-  <button class="btn" id="tblEdit" style="display:none" title="修改表名 / 备注">✎</button>
+  <button class="btn" id="tblEdit" style="display:none" data-i18n-title="hdr.editTable">✎</button>
   <div class="ctl">
-    <select id="provider" title="决策后端">
+    <select id="provider" data-i18n-title="hdr.providerTitle">
       <option value="jev">jev</option>
       <option value="openrouter">openrouter</option>
       <option value="bailian">百炼</option>
       <option value="mock">mock</option>
     </select>
-    <input id="modelFilter" placeholder="筛模型…">
-    <select id="model" title="决策模型"></select>
+    <input id="modelFilter" data-i18n-ph="hdr.modelFilterPh" placeholder="筛模型…">
+    <select id="model" data-i18n-title="hdr.modelTitle"></select>
   </div>
   <div class="hstats">
     <span id="stats"></span>
@@ -224,27 +231,28 @@
       <span id="gateLbTxt">门控</span>
       <input id="gate" type="number" min="0.05" max="1" step="0.05" value="0.7">
     </label>
+    <button class="btn" id="langBtn" data-i18n-title="lang.title">EN</button>
   </div>
 </header>
 <main>
   <section id="startView" style="display:none">
-    <div class="start-sub">全部表 · 一张表是一棵判据树</div>
+    <div class="start-sub" data-i18n="start.sub">全部表 · 一张表是一棵判据树</div>
     <div class="newtbl">
       <div class="newtbl-row">
-        <input id="nt-name" placeholder="表名（必填）">
-        <input id="nt-note" placeholder="备注（可选，显示在卡片上）">
-        <button class="btn primary" id="nt-go">新建表</button>
+        <input id="nt-name" data-i18n-ph="nt.namePh" placeholder="表名（必填）">
+        <input id="nt-note" data-i18n-ph="nt.notePh" placeholder="备注（可选，显示在卡片上）">
+        <button class="btn primary" id="nt-go" data-i18n="nt.go">新建表</button>
       </div>
       <div class="mode-pick">
         <label class="mode-opt">
-          <input type="radio" name="nt-mode" value="noul" checked> noul 多选分支
-          <span class="tip">?<span class="tipbox"><b>noul · 多选分支 + 并发搜索</b><br>
+          <input type="radio" name="nt-mode" value="noul" checked> <span data-i18n="mode.noul">noul 多选分支</span>
+          <span class="tip">?<span class="tipbox" data-i18n-html="tip.noulBody"><b>noul · 多选分支 + 并发搜索</b><br>
             每层把内容与各分支判据逐一比对（P(yes) 过门控），一份内容可同时命中多个分支；
             检索时多路并发命中、按命中叶数排序。适合一条话术涉及多种诉求的场景。</span></span>
         </label>
         <label class="mode-opt">
-          <input type="radio" name="nt-mode" value="choice"> choice 单选分支
-          <span class="tip">?<span class="tipbox"><b>choice · 单选逐层下行</b><br>
+          <input type="radio" name="nt-mode" value="choice"> <span data-i18n="mode.choice">choice 单选分支</span>
+          <span class="tip">?<span class="tipbox" data-i18n-html="tip.choiceBody"><b>choice · 单选逐层下行</b><br>
             每层一个问题，从全部选项（含兜底「以上都不符合」）中只挑一个胜出，沿单路径逐层下行；
             胜出置信度低于采纳线（默认 0.6）落兜底。适合互斥分类场景。</span></span>
         </label>
@@ -252,52 +260,279 @@
       <div class="mode-desc" id="nt-mode-desc"></div>
     </div>
     <div id="tableGrid" class="grid"></div>
-    <div id="startEmpty" class="start-empty" style="display:none">
+    <div id="startEmpty" class="start-empty" style="display:none" data-i18n-html="start.empty">
       还没有表<br>
       <span>用上方表单新建一张：命名 + 选分支方式（noul 多选 / choice 单选）</span>
     </div>
   </section>
   <section id="treePanel" style="display:none">
     <div class="panel-head">
-      <span class="hint">左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删节点</span>
-      <button class="btn" id="expandAll">全部展开</button>
+      <span class="hint" data-i18n="tree.hint">左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删节点</span>
+      <button class="btn" id="expandAll" data-i18n="tree.expandAll">全部展开</button>
     </div>
-    <div id="tree"><div class="loading">加载中…</div></div>
+    <div id="tree"><div class="loading" data-i18n="tree.loading">加载中…</div></div>
   </section>
   <section id="detailPanel" style="display:none">
     <div class="tabs">
-      <button class="tab active" data-tab="detail">节点详情</button>
-      <button class="tab" data-tab="quest">控制台</button>
+      <button class="tab active" data-tab="detail" data-i18n="tab.detail">节点详情</button>
+      <button class="tab" data-tab="quest" data-i18n="tab.quest">控制台</button>
     </div>
     <div id="tab-detail">
-      <div id="detailEmpty" class="empty">点击左侧任意节点<br>展示该节点的路径、判据与落位数据（内部节点含子节点列表）<br><span>未点击不显示任何内容</span></div>
+      <div id="detailEmpty" class="empty" data-i18n-html="detail.empty">点击左侧任意节点<br>展示该节点的路径、判据与落位数据（内部节点含子节点列表）<br><span>未点击不显示任何内容</span></div>
       <div id="detail" style="display:none"></div>
     </div>
     <div id="tab-quest" style="display:none">
       <div class="q-modes">
-        <button class="tab active" data-mode="add">落位 add</button>
-        <button class="tab" data-mode="search">检索 search</button>
-        <span class="hint-dim" id="q-hint">Enter 落位 · Shift+Enter 换行</span>
+        <button class="tab active" data-mode="add" data-i18n="q.modeAdd">落位 add</button>
+        <button class="tab" data-mode="search" data-i18n="q.modeSearch">检索 search</button>
+        <span class="hint-dim" id="q-hint"></span>
       </div>
       <div class="q-row" id="q-id-row" style="display:none">
-        <input id="q-doc-id" placeholder="文档 ID（留空自动生成；同 ID 重落会替换旧落位）">
+        <input id="q-doc-id" data-i18n-ph="q.docIdPh" placeholder="文档 ID（留空自动生成；同 ID 重落会替换旧落位）">
       </div>
       <div class="q-row">
         <textarea id="q-input" rows="3"></textarea>
-        <button class="btn primary" id="q-go">落位</button>
+        <button class="btn primary" id="q-go"></button>
       </div>
       <div id="q-out"></div>
     </div>
   </section>
 </main>
 <script>
+  // ── 双语（zh/en）：localStorage('sq-lang') 持久化，右上角按钮切换 ──
+  const I18N = {
+    zh: {
+      'app.docTitle': '问义树 · SemQuestTree',
+      'app.titleShort': '问义树',
+      'back.allTables': '‹ 全部表',
+      'hdr.editTable': '修改表名 / 备注',
+      'hdr.providerTitle': '决策后端',
+      'hdr.modelTitle': '决策模型',
+      'hdr.modelFilterPh': '筛模型…',
+      'hdr.docs': '落位 {n} 条',
+      'lang.title': '切换语言 / Switch language',
+      'gate.noul': '门控', 'gate.choice': '采纳线',
+      'gate.noulTitle': 'noul 绝对门控 (0, 1]，只影响其后的判定',
+      'gate.choiceTitle': 'choice 采纳线 (0, 1]：单层胜出置信度低于此值落兜底',
+      'start.sub': '全部表 · 一张表是一棵判据树',
+      'nt.namePh': '表名（必填）', 'nt.notePh': '备注（可选，显示在卡片上）', 'nt.go': '新建表',
+      'mode.noul': 'noul 多选分支', 'mode.choice': 'choice 单选分支',
+      'tag.noul': 'noul 多选', 'tag.choice': 'choice 单选',
+      'tag.otherNoul': '兜底', 'tag.otherChoice': '兜底选项', 'badge.docCount': '落位条数',
+      'tip.noulBody': '<b>noul · 多选分支 + 并发搜索</b><br>每层把内容与各分支判据逐一比对（P(yes) 过门控），一份内容可同时命中多个分支；检索时多路并发命中、按命中叶数排序。适合一条话术涉及多种诉求的场景。',
+      'tip.choiceBody': '<b>choice · 单选逐层下行</b><br>每层一个问题，从全部选项（含兜底「以上都不符合」）中只挑一个胜出，沿单路径逐层下行；胜出置信度低于采纳线（默认 0.6）落兜底。适合互斥分类场景。',
+      'modeDesc.noul': '多选：每层逐分支比对 P(yes) 过门控，一份内容可多枝落位，检索多路并发命中（判据叶 = 多标签）。',
+      'modeDesc.choice': '单选：每层一个问题只挑一个胜出选项，沿单路径逐层下行；置信度低于采纳线落兜底（判据 = 选项）。',
+      'card.noNote': '（无备注）', 'card.docs': '落位 {n} 条', 'card.edit': '改名 / 备注', 'card.del': '删表',
+      'start.empty': '还没有表<br><span>用上方表单新建一张：命名 + 选分支方式（noul 多选 / choice 单选）</span>',
+      'tree.hint': '左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删节点',
+      'tree.expandAll': '全部展开', 'tree.loading': '加载中…',
+      'tab.detail': '节点详情', 'tab.quest': '控制台',
+      'detail.empty': '点击左侧任意节点<br>展示该节点的路径、判据与落位数据（内部节点含子节点列表）<br><span>未点击不显示任何内容</span>',
+      'detail.loading': '沿路径查询中…',
+      'detail.subtreeDocs': '子树落位 {n} 条', 'detail.leafDocs': '{n} 条落位',
+      'detail.children': '子节点 · {n}', 'detail.docs': '落位数据', 'detail.noDocs': '（该叶暂无落位）',
+      'detail.subContent': '子树内容', 'detail.subContentN': '子树内容 · {n}',
+      'detail.loadMore': '加载更多（共 {n} 条）',
+      'detail.otherNoul': '兜底叶不参与判定请求（无判据）——本层无真实判据过门时落位于此',
+      'detail.otherChoice': '兜底选项「以上都不符合」：本层无选项胜出，或胜出置信度低于采纳线 {gate} 时落位于此',
+      'q.modeAdd': '落位 add', 'q.modeSearch': '检索 search',
+      'q.hintAdd': 'Enter 落位 · Shift+Enter 换行 · 多行 = 批量导入（每行一条）',
+      'q.hintSearch': 'Enter 检索 · Shift+Enter 换行',
+      'q.docIdPh': '文档 ID（留空自动生成；同 ID 重落会替换旧落位）',
+      'q.goAdd': '落位', 'q.goSearch': '检索',
+      'q.phAddNoul': '粘贴一条司机话术，按判据树落位（同 ID 重落替换旧落位）；多行则批量导入',
+      'q.phAddChoice': '粘贴一条内容，按选项逐层单选下行落位（同 ID 重落替换旧落位）',
+      'q.phSearch': '输入检索语句，如：哪些司机嫌运费太低不赚钱',
+      'q.emptyAdd': '请输入内容正文', 'q.emptySearch': '请输入检索语句',
+      'q.loadingAdd': '逐层判定落位中…', 'q.loadingQuest': '逐层判定中…',
+      'add.done': '落位完成 · {id}',
+      'add.noLeafNoul': '（无叶名——异常，正常应至少落兜底叶）',
+      'add.noLeafChoice': '（无叶名——异常，正常应至少落兜底选项）',
+      'add.trace': '判定轨迹（{n} 次请求）',
+      'batch.done': '批量导入完成 · 成功 {ok} / 失败 {fail} / 共 {total}',
+      'batch.rowFail': '#{index} · {error}',
+      'quest.hits': '命中叶 · {n}', 'quest.fast': '⚡ 缓存直出 · 同款查询零模型调用',
+      'quest.rank': '排序文档 · {n}',
+      'quest.scoreNoul': '（分数 = 命中叶数）', 'quest.scoreChoice': '（分数 = 路径各层胜出概率连乘）',
+      'quest.noHitNoul': '没有叶过门（沿途 P(yes) 均低于门控 {gate}）',
+      'quest.noHitChoice': '没有命中（choice 单路径下行：途中置信度低于采纳线 {gate} 或落兜底即止）',
+      'quest.noDocs': '（无命中文档）', 'quest.trace': '判定轨迹（{n} 次请求）',
+      'menu.addNoul': '＋ 增加判断节点（jn）', 'menu.addChoice': '＋ 增加选项（分支）',
+      'menu.editNoul': '✎ 修改节点（name / yes / no）', 'menu.editChoice': '✎ 修改选项（名称 / 描述）',
+      'menu.del': '－ 删除节点（含子树与落位数据）',
+      'other.toastNoul': '兜底叶不参与判定请求（无判据、不可改名）——如需调整请操作其父节点',
+      'other.toastChoice': '兜底选项「以上都不符合」为系统固定项（参与归一化），不可直接编辑——如需调整请操作其父节点',
+      'dlg.addTitleNoul': '在 {parent} 下增加判断节点', 'dlg.addTitleChoice': '在 {parent} 下增加选项',
+      'dlg.scopeNoulLeaf': '该叶为叶子节点：将分化为判断节点，其全部存量逐条重判（每条 1 次请求），过门进新节点，其余进 {other}',
+      'dlg.scopeNoulInternal': '将对其兜底叶 {other} 的存量逐条重判（每条 1 次请求），过门迁入新节点',
+      'dlg.scopeChoiceLeaf': '该叶将分化为本层的一个选项；父层相关存量按完整选项列表重判（每条 1 次请求），选中此项则迁入',
+      'dlg.scopeChoiceInternal': '将在该层新增一个选项；父层兜底存量按完整选项列表重判（每条 1 次请求），选中此项则迁入',
+      'dlg.critHint': '。判据用中文事件级原子断言。',
+      'dlg.nameLabelNoul': '节点名 NAME', 'dlg.nameLabelChoice': '选项名（新分支）',
+      'dlg.namePhNoul': '如 定位异常', 'dlg.namePhChoice': '如 运费争议',
+      'dlg.yesLabelNoul': 'yes 判据（是侧原子断言）', 'dlg.yesLabelChoice': '选项描述（可选；留空用选项名本身）',
+      'dlg.yesPhNoul': '司机报告系统定位错误或导航找不到入口…', 'dlg.yesPhChoice': '司机对运费金额、扣款或计价有异议…',
+      'dlg.noLabel': 'no 判据（留空自动生成）',
+      'dlg.create': '创建', 'dlg.cancel': '取消', 'dlg.save': '保存',
+      'dlg.errNoul': '节点名与 yes 判据必填', 'dlg.errChoice': '选项名必填', 'dlg.errNameEmpty': '名称不可为空',
+      'dlg.growFail': '增长失败', 'dlg.editFail': '修改失败', 'dlg.delFail': '删除失败',
+      'dlg.editTitleNoul': '修改节点 {name}', 'dlg.editTitleChoice': '修改选项 {name}',
+      'dlg.editNote': '零模型调用。改名会连带重命名兜底叶并更新落位指针；改判据不重判已落位数据（后续落位/检索按新判据收正）。修改记录随快照持久化，重启自动回放。',
+      'dlg.edNameNoul': '节点名', 'dlg.edNameChoice': '选项名',
+      'dlg.edYesNoul': 'yes 判据（是侧原子断言；留空不改）', 'dlg.edYesChoice': '选项描述（可选；留空保持）',
+      'dlg.delTitle': '删除 {name}？', 'dlg.delNote': '将同时删除其全部子节点（含兜底叶），并清理这些叶上的全部落位数据，此操作不可撤销。',
+      'toast.added': '已新增 {node} · 重判 {judged} 条', 'toast.movedIn': ' · 迁入: ', 'toast.movedNone': ' · 无存量迁入',
+      'toast.editDone': '已修改 {name}', 'toast.renamed': '（原 {old}）',
+      'toast.delDone': '已删除 {name} · 移除 {nodes} 个节点 · 清理 {docs} 条文档',
+      'tbl.editTitle': '修改表 {name}',
+      'tbl.editNote': '仅改表名与备注；模式（{mode}）建表时定死不可改。零模型调用，随表落盘。',
+      'tbl.nameLabel': '表名', 'tbl.noteLabel': '备注（可留空）',
+      'tbl.delTitle': '删除表 {name}？',
+      'tbl.delNote': '将删除这棵树的全部结构、判据与落位数据（tables/{id}.json 一并移除），此操作不可撤销。',
+      'tbl.delBtn': '删除',
+      'toast.tblNameEmpty': '表名不可为空', 'toast.needName': '请输入表名',
+      'toast.tblSaved': '已修改表「{name}」{note}',
+      'toast.tblDeleted': '已删除表「{name}」',
+      'toast.tblCreated': '已建表「{name}」（{mode}）— 右键 ROOT 开始建分支',
+      'toast.tblCreateFail': '建表失败',
+      'toast.openFail': '打开表失败', 'toast.saveFail': '修改失败', 'toast.delTableFail': '删表失败',
+      'toast.gateRange': '{label}须在 (0, 1] 区间', 'toast.gateOk': '{label}已调整为 {value}', 'toast.gateFail': '调整失败',
+      'toast.loadFail': '加载失败',
+      'model.pickPh': '— 选择模型 —', 'model.loading': '加载中…', 'model.unavailable': '列表不可用',
+      'model.free': ' ·免费',
+      'model.switched': '已切换: {backend} · {model}（对所有表生效）', 'model.switchFail': '切换失败',
+      'model.fallback': '模型列表为静态候选（上游列表不可达或缺凭据）',
+    },
+    en: {
+      'app.docTitle': 'SemQuestTree',
+      'app.titleShort': 'SemQuestTree',
+      'back.allTables': '‹ All tables',
+      'hdr.editTable': 'Edit table name / note',
+      'hdr.providerTitle': 'Decision backend',
+      'hdr.modelTitle': 'Decision model',
+      'hdr.modelFilterPh': 'Filter models…',
+      'hdr.docs': '{n} docs placed',
+      'lang.title': 'Switch language / 切换语言',
+      'gate.noul': 'Gate', 'gate.choice': 'Accept line',
+      'gate.noulTitle': 'noul absolute gate (0, 1]; only affects subsequent decisions',
+      'gate.choiceTitle': 'choice accept line (0, 1]: a win with confidence below it falls back',
+      'start.sub': 'All tables · one table = one criteria tree',
+      'nt.namePh': 'Table name (required)', 'nt.notePh': 'Note (optional, shown on the card)', 'nt.go': 'New table',
+      'mode.noul': 'noul multi-label', 'mode.choice': 'choice single-path',
+      'tag.noul': 'noul multi', 'tag.choice': 'choice single',
+      'tag.otherNoul': 'fallback', 'tag.otherChoice': 'fallback opt', 'badge.docCount': 'docs placed',
+      'tip.noulBody': '<b>noul · multi-label + parallel search</b><br>Each level compares the content against every branch criterion (P(yes) must pass the gate); one utterance can hit several branches. Search fans out in parallel and ranks by number of hit leaves. Good when one utterance carries several intents.',
+      'tip.choiceBody': '<b>choice · single-path descent</b><br>One question per level: pick exactly one winner from all options (including the fallback "none of the above") and descend that single path; a win below the accept line (default 0.6) falls back. Good for mutually exclusive classification.',
+      'modeDesc.noul': 'Multi-label: every branch is compared at each level and P(yes) passing the gate places the content on multiple leaves; search hits in parallel (criteria leaves = multi-label).',
+      'modeDesc.choice': 'Single-path: one question per level picks a single winning option and descends only that path; below the accept line it falls back (criteria = option).',
+      'card.noNote': '(no note)', 'card.docs': '{n} docs placed', 'card.edit': 'Rename / note', 'card.del': 'Delete',
+      'start.empty': 'No tables yet<br><span>Create one with the form above: name + branching mode (noul multi-label / choice single-path)</span>',
+      'tree.hint': 'Click a node for details (internal nodes also expand/collapse) · right-click to add / edit / delete',
+      'tree.expandAll': 'Expand all', 'tree.loading': 'Loading…',
+      'tab.detail': 'Node detail', 'tab.quest': 'Console',
+      'detail.empty': 'Click any node on the left<br>to see its path, criteria and placed docs (internal nodes list children)<br><span>Nothing shows until you click</span>',
+      'detail.loading': 'Resolving path…',
+      'detail.subtreeDocs': '{n} docs under subtree', 'detail.leafDocs': '{n} docs placed',
+      'detail.children': 'Children · {n}', 'detail.docs': 'Placed docs', 'detail.noDocs': '(no docs on this leaf yet)',
+      'detail.subContent': 'Subtree content', 'detail.subContentN': 'Subtree content · {n}',
+      'detail.loadMore': 'Load more ({n} total)',
+      'detail.otherNoul': 'Fallback leaf takes no decision requests (no criteria) — content lands here when no real criterion passes this level',
+      'detail.otherChoice': 'Fallback option "none of the above": lands here when no option wins, or the win confidence is below the accept line {gate}',
+      'q.modeAdd': 'add', 'q.modeSearch': 'search',
+      'q.hintAdd': 'Enter to add · Shift+Enter newline · multi-line = batch import (one per line)',
+      'q.hintSearch': 'Enter to search · Shift+Enter newline',
+      'q.docIdPh': 'Doc ID (empty = auto; re-adding the same ID replaces its placement)',
+      'q.goAdd': 'Add', 'q.goSearch': 'Search',
+      'q.phAddNoul': 'Paste one utterance to place it down the criteria tree (same ID replaces); multiple lines = batch import',
+      'q.phAddChoice': 'Paste one utterance to place it down the option tree (same ID replaces)',
+      'q.phSearch': 'Type a query, e.g. drivers complaining the fare is too low',
+      'q.emptyAdd': 'Type the content first', 'q.emptySearch': 'Type a query first',
+      'q.loadingAdd': 'Descending & placing…', 'q.loadingQuest': 'Descending…',
+      'add.done': 'Placed · {id}',
+      'add.noLeafNoul': '(no leaf name — abnormal; should at least hit a fallback leaf)',
+      'add.noLeafChoice': '(no leaf name — abnormal; should at least hit the fallback option)',
+      'add.trace': 'Decision trace ({n} requests)',
+      'batch.done': 'Batch import done · {ok} ok / {fail} failed / {total} total',
+      'batch.rowFail': '#{index} · {error}',
+      'quest.hits': 'Hit leaves · {n}', 'quest.fast': '⚡ cached result · zero model calls',
+      'quest.rank': 'Ranked docs · {n}',
+      'quest.scoreNoul': '(score = number of hit leaves)', 'quest.scoreChoice': '(score = product of win probabilities along the path)',
+      'quest.noHitNoul': 'No leaf passed the gate (every P(yes) along the way is below {gate})',
+      'quest.noHitChoice': 'No hit (choice descends a single path: confidence below the accept line {gate} or a fallback ends the walk)',
+      'quest.noDocs': '(no matching docs)', 'quest.trace': 'Decision trace ({n} requests)',
+      'menu.addNoul': '＋ Add decision node (jn)', 'menu.addChoice': '＋ Add option (branch)',
+      'menu.editNoul': '✎ Edit node (name / yes / no)', 'menu.editChoice': '✎ Edit option (name / description)',
+      'menu.del': '－ Delete node (with subtree and placed docs)',
+      'other.toastNoul': 'The fallback leaf takes no decision requests (no criteria, not renamable) — adjust its parent node instead',
+      'other.toastChoice': 'The fallback option "none of the above" is a fixed system item (joins normalization) — adjust its parent node instead',
+      'dlg.addTitleNoul': 'Add decision node under {parent}', 'dlg.addTitleChoice': 'Add option under {parent}',
+      'dlg.scopeNoulLeaf': 'This is a leaf: it will differentiate into a decision node; all its docs are re-judged (1 request each) — passing ones move into the new node, the rest into {other}',
+      'dlg.scopeNoulInternal': 'Docs on its fallback leaf {other} are re-judged one by one (1 request each); passing ones move into the new node',
+      'dlg.scopeChoiceLeaf': 'This leaf will differentiate into an option of this level; related docs are re-judged against the full option list (1 request each) and move in if this option wins',
+      'dlg.scopeChoiceInternal': 'A new option joins this level; fallback docs are re-judged against the full option list (1 request each) and move in if this option wins',
+      'dlg.critHint': '. Criteria are event-level atomic assertions.',
+      'dlg.nameLabelNoul': 'Node NAME', 'dlg.nameLabelChoice': 'Option name (new branch)',
+      'dlg.namePhNoul': 'e.g. GPS glitch', 'dlg.namePhChoice': 'e.g. Fare dispute',
+      'dlg.yesLabelNoul': 'yes criterion (YES-side atomic assertion)', 'dlg.yesLabelChoice': 'Option description (optional; empty = use the name)',
+      'dlg.yesPhNoul': 'Driver reports a GPS error or the navigation cannot find the entrance…', 'dlg.yesPhChoice': 'Driver disputes the fare amount, deduction or pricing…',
+      'dlg.noLabel': 'no criterion (empty = auto-generated)',
+      'dlg.create': 'Create', 'dlg.cancel': 'Cancel', 'dlg.save': 'Save',
+      'dlg.errNoul': 'Node name and yes criterion are required', 'dlg.errChoice': 'Option name is required', 'dlg.errNameEmpty': 'Name cannot be empty',
+      'dlg.growFail': 'Grow failed', 'dlg.editFail': 'Edit failed', 'dlg.delFail': 'Delete failed',
+      'dlg.editTitleNoul': 'Edit node {name}', 'dlg.editTitleChoice': 'Edit option {name}',
+      'dlg.editNote': 'Zero model calls. Renaming also renames the fallback leaf and updates placement pointers; editing criteria does not re-judge placed docs (later add/quest self-corrects). Edits persist with the snapshot and replay on restart.',
+      'dlg.edNameNoul': 'Node name', 'dlg.edNameChoice': 'Option name',
+      'dlg.edYesNoul': 'yes criterion (YES-side atomic assertion; empty = keep)', 'dlg.edYesChoice': 'Option description (optional; empty = keep)',
+      'dlg.delTitle': 'Delete {name}?', 'dlg.delNote': 'Also deletes all its children (including fallback leaves) and clears every doc placed on them. This cannot be undone.',
+      'toast.added': 'Added {node} · re-judged {judged}', 'toast.movedIn': ' · moved in: ', 'toast.movedNone': ' · nothing moved',
+      'toast.editDone': 'Edited {name}', 'toast.renamed': ' (was {old})',
+      'toast.delDone': 'Deleted {name} · {nodes} nodes removed · {docs} docs cleared',
+      'tbl.editTitle': 'Edit table {name}',
+      'tbl.editNote': 'Only the name and note are editable; the mode ({mode}) is fixed at creation. Zero model calls, persisted with the table.',
+      'tbl.nameLabel': 'Table name', 'tbl.noteLabel': 'Note (optional)',
+      'tbl.delTitle': 'Delete table {name}?',
+      'tbl.delNote': 'Deletes the whole tree: structure, criteria and placed docs (tables/{id}.json removed too). This cannot be undone.',
+      'tbl.delBtn': 'Delete',
+      'toast.tblNameEmpty': 'Table name cannot be empty', 'toast.needName': 'Type a table name',
+      'toast.tblSaved': 'Table edited "{name}" {note}',
+      'toast.tblDeleted': 'Table deleted "{name}"',
+      'toast.tblCreated': 'Table created "{name}" ({mode}) — right-click ROOT to add branches',
+      'toast.tblCreateFail': 'Create failed',
+      'toast.openFail': 'Failed to open table', 'toast.saveFail': 'Save failed', 'toast.delTableFail': 'Delete failed',
+      'toast.gateRange': '{label} must be in (0, 1]', 'toast.gateOk': '{label} set to {value}', 'toast.gateFail': 'Adjust failed',
+      'toast.loadFail': 'Load failed',
+      'model.pickPh': '— pick a model —', 'model.loading': 'Loading…', 'model.unavailable': 'unavailable',
+      'model.free': ' ·free',
+      'model.switched': 'Switched: {backend} · {model} (applies to all tables)', 'model.switchFail': 'Switch failed',
+      'model.fallback': 'Model list is a static fallback (upstream unreachable or credentials missing)',
+    }
+  };
+  let LANG = localStorage.getItem('sq-lang') === 'en' ? 'en' : 'zh';
+  const T = k => (I18N[LANG] && I18N[LANG][k]) || I18N.zh[k] || k;
+  const Tf = (k, vars) => T(k).replace(/\{(\w+)\}/g, (m, n) => vars && vars[n] != null ? vars[n] : m);
+  const localeTag = () => LANG === 'en' ? 'en-US' : 'zh-CN';
+
+  function applyI18n() {
+    document.documentElement.lang = LANG;
+    document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = T(el.dataset.i18n); });
+    document.querySelectorAll('[data-i18n-html]').forEach(el => { el.innerHTML = T(el.dataset.i18nHtml); });
+    document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = T(el.dataset.i18nPh); });
+    document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = T(el.dataset.i18nTitle); });
+    $('#langBtn').textContent = LANG === 'zh' ? 'EN' : '中文';
+    applyGateLabel();
+    setMode(consoleMode);
+    if (state.tinfo) document.title = state.tinfo.name + ' · ' + T('app.titleShort');
+    else document.title = T('app.docTitle');
+  }
+
   const $ = sel => document.querySelector(sel);
   const state = { tid: null, mode: 'noul',
     expanded: new Set(), containers: {}, wraps: {}, selectedRow: null,
     backend: '', gate: 0.7, choiceGate: 0.6, docCount: 0, tinfo: null,
     allModels: [], modelSource: '', modelBarInit: false };
 
-  const T = () => '/api/t/' + state.tid;
+  const T0 = () => '/api/t/' + state.tid;
   const fmtScore = v => (typeof v === 'number' && !Number.isInteger(v)) ? v.toFixed(2) : String(v);
 
   function esc(s) {
@@ -346,7 +581,7 @@
     $('#startView').style.display = '';
     $('#treePanel').style.display = 'none';
     $('#detailPanel').style.display = 'none';
-    document.title = '问义树 · SemQuestTree';
+    document.title = T('app.docTitle');
     loadTables();
   }
 
@@ -354,7 +589,7 @@
     try {
       renderTables(await api('/api/tables'));
     } catch (e) {
-      $('#tableGrid').innerHTML = '<div class="error">表清单加载失败: ' + esc(e) + '</div>';
+      $('#tableGrid').innerHTML = '<div class="error">' + T('toast.loadFail') + ': ' + esc(e) + '</div>';
     }
   }
 
@@ -367,12 +602,12 @@
       card.className = 'card';
       card.innerHTML =
         '<div class="card-head"><span class="card-name">' + esc(t.name) + '</span>' +
-        '<span class="mode-tag ' + esc(t.mode) + '">' + (t.mode === 'choice' ? 'choice 单选' : 'noul 多选') + '</span></div>' +
-        '<div class="card-note">' + (t.note ? esc(t.note) : '<span style="color:#454e5c">（无备注）</span>') + '</div>' +
-        '<div class="card-foot"><span>落位 ' + t.docCount + ' 条</span>' +
-        '<span>' + (t.createdAt ? new Date(t.createdAt).toLocaleDateString('zh-CN') : '') + '</span>' +
-        '<button class="card-edit">改名 / 备注</button>' +
-        '<button class="card-del">删表</button></div>';
+        '<span class="mode-tag ' + esc(t.mode) + '">' + esc(T(t.mode === 'choice' ? 'tag.choice' : 'tag.noul')) + '</span></div>' +
+        '<div class="card-note">' + (t.note ? esc(t.note) : '<span style="color:#454e5c">' + esc(T('card.noNote')) + '</span>') + '</div>' +
+        '<div class="card-foot"><span>' + esc(Tf('card.docs', { n: t.docCount })) + '</span>' +
+        '<span>' + (t.createdAt ? new Date(t.createdAt).toLocaleDateString(localeTag()) : '') + '</span>' +
+        '<button class="card-edit">' + esc(T('card.edit')) + '</button>' +
+        '<button class="card-del">' + esc(T('card.del')) + '</button></div>';
       card.onclick = () => { location.hash = '#/t/' + encodeURIComponent(t.id); };
       card.querySelector('.card-edit').onclick = e => { e.stopPropagation(); openTableEditDialog(t, () => loadTables()); };
       card.querySelector('.card-del').onclick = e => { e.stopPropagation(); confirmDeleteTable(t); };
@@ -386,14 +621,14 @@
     ov.className = 'overlay';
     ov.innerHTML =
       '<div class="dialog">' +
-      '  <h3>修改表 <code>' + esc(t.name) + '</code></h3>' +
-      '  <div class="dlg-note">仅改表名与备注；模式（' + (t.mode === 'choice' ? 'choice 单选' : 'noul 多选') + '）建表时定死不可改。零模型调用，随表落盘。</div>' +
-      '  <label>表名</label>' +
+      '  <h3>' + esc(Tf('tbl.editTitle', { name: t.name })) + '</h3>' +
+      '  <div class="dlg-note">' + esc(Tf('tbl.editNote', { mode: T(t.mode === 'choice' ? 'tag.choice' : 'tag.noul') })) + '</div>' +
+      '  <label>' + esc(T('tbl.nameLabel')) + '</label>' +
       '  <input id="et-name" value="' + esc(t.name) + '">' +
-      '  <label>备注（可留空）</label>' +
+      '  <label>' + esc(T('tbl.noteLabel')) + '</label>' +
       '  <input id="et-note" value="' + esc(t.note || '') + '">' +
-      '  <div class="actions"><button class="btn" id="et-cancel">取消</button>' +
-      '  <button class="btn primary" id="et-ok">保存</button></div>' +
+      '  <div class="actions"><button class="btn" id="et-cancel">' + esc(T('dlg.cancel')) + '</button>' +
+      '  <button class="btn primary" id="et-ok">' + esc(T('dlg.save')) + '</button></div>' +
       '</div>';
     document.body.appendChild(ov);
     ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
@@ -401,7 +636,7 @@
     ov.querySelector('#et-ok').onclick = async () => {
       const name = ov.querySelector('#et-name').value.trim();
       const note = ov.querySelector('#et-note').value.trim();
-      if (!name) { toast('表名不可为空', true); return; }
+      if (!name) { toast(T('toast.tblNameEmpty'), true); return; }
       const body = {};
       if (name !== t.name) body.name = name;
       if (note !== (t.note || '')) body.note = note;
@@ -416,10 +651,10 @@
         const out = await r.json().catch(() => ({}));
         if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#et-ok').disabled = false; return; }
         ov.remove();
-        toast('已修改表「' + out.name + '」' + (out.note ? '· ' + out.note : ''));
+        toast(Tf('toast.tblSaved', { name: out.name, note: out.note ? '· ' + out.note : '' }));
         if (onSaved) onSaved(out);
       } catch (e) {
-        toast('修改失败: ' + e, true);
+        toast(T('toast.saveFail') + ': ' + e, true);
         ov.querySelector('#et-ok').disabled = false;
       }
     };
@@ -430,10 +665,10 @@
     ov.className = 'overlay';
     ov.innerHTML =
       '<div class="dialog">' +
-      '  <h3>删除表 <code>' + esc(t.name) + '</code>？</h3>' +
-      '  <div class="dlg-note">将删除这棵树的全部结构、判据与落位数据（tables/' + esc(t.id) + '.json 一并移除），此操作不可撤销。</div>' +
-      '  <div class="actions"><button class="btn" id="dt-cancel">取消</button>' +
-      '  <button class="btn danger" id="dt-ok">删除</button></div>' +
+      '  <h3>' + esc(Tf('tbl.delTitle', { name: t.name })) + '</h3>' +
+      '  <div class="dlg-note">' + esc(Tf('tbl.delNote', { id: t.id })) + '</div>' +
+      '  <div class="actions"><button class="btn" id="dt-cancel">' + esc(T('dlg.cancel')) + '</button>' +
+      '  <button class="btn danger" id="dt-ok">' + esc(T('tbl.delBtn')) + '</button></div>' +
       '</div>';
     document.body.appendChild(ov);
     ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
@@ -445,23 +680,19 @@
         const out = await r.json().catch(() => ({}));
         if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#dt-ok').disabled = false; return; }
         ov.remove();
-        toast('已删除表「' + t.name + '」');
+        toast(Tf('toast.tblDeleted', { name: t.name }));
         loadTables();
       } catch (e) {
-        toast('删表失败: ' + e, true);
+        toast(T('toast.delTableFail') + ': ' + e, true);
         ov.querySelector('#dt-ok').disabled = false;
       }
     };
   }
 
   // 新建表：命名 + 分支方式（noul/choice 建表时定死）+ 备注
-  const MODE_DESC = {
-    noul: '多选：每层逐分支比对 P(yes) 过门控，一份内容可多枝落位，检索多路并发命中（判据叶 = 多标签）。',
-    choice: '单选：每层一个问题只挑一个胜出选项，沿单路径逐层下行；置信度低于采纳线落兜底（判据 = 选项）。'
-  };
   function syncModeDesc() {
     const v = document.querySelector('input[name="nt-mode"]:checked').value;
-    $('#nt-mode-desc').textContent = MODE_DESC[v];
+    $('#nt-mode-desc').textContent = T(v === 'choice' ? 'modeDesc.choice' : 'modeDesc.noul');
   }
   for (const r of document.querySelectorAll('input[name="nt-mode"]')) r.onchange = syncModeDesc;
   syncModeDesc();
@@ -470,15 +701,15 @@
     const name = $('#nt-name').value.trim();
     const mode = document.querySelector('input[name="nt-mode"]:checked').value;
     const note = $('#nt-note').value.trim();
-    if (!name) { toast('请输入表名', true); return; }
+    if (!name) { toast(T('toast.needName'), true); return; }
     $('#nt-go').disabled = true;
     try {
       const out = await apiPost('/api/tables', { name, mode, note });
       $('#nt-name').value = ''; $('#nt-note').value = '';
-      toast('已建表「' + out.name + '」（' + out.mode + '）— 右键 ROOT 开始建分支');
+      toast(Tf('toast.tblCreated', { name: out.name, mode: out.mode }));
       location.hash = '#/t/' + encodeURIComponent(out.id);
     } catch (e) {
-      toast('建表失败: ' + e, true);
+      toast(T('toast.tblCreateFail') + ': ' + e, true);
     }
     $('#nt-go').disabled = false;
   };
@@ -488,7 +719,7 @@
   async function openTable(id) {
     state.tid = id;
     try {
-      const d = await api(T());   // 表元信息 + metaMap
+      const d = await api(T0());   // 表元信息 + metaMap
       state.mode = d.meta.mode;
       state.gate = d.meta.noulGate;
       state.choiceGate = d.meta.choiceGate;
@@ -499,7 +730,7 @@
       $('#tblEdit').style.display = '';
       state.tinfo = d;
       const mt = $('#tblMode');
-      mt.textContent = d.mode === 'choice' ? 'choice 单选' : 'noul 多选';
+      mt.textContent = T(d.mode === 'choice' ? 'tag.choice' : 'tag.noul');
       mt.className = 'mode-tag ' + d.mode;
       mt.style.display = '';
       $('#backBtn').style.display = '';
@@ -507,22 +738,22 @@
       $('#treePanel').style.display = '';
       $('#detailPanel').style.display = '';
       $('#gateLb').style.display = '';
-      document.title = d.name + ' · 问义树';
+      document.title = d.name + ' · ' + T('app.titleShort');
       applyGateLabel();
       renderStats(d.meta);
       state.expanded = new Set();
       state.containers = {};
       state.wraps = {};
       state.selectedRow = null;
-      $('#tree').innerHTML = '<div class="loading">加载中…</div>';
-      const nd = await api(T() + '/node');   // 初始只取根一层
+      $('#tree').innerHTML = '<div class="loading">' + esc(T('tree.loading')) + '</div>';
+      const nd = await api(T0() + '/node');   // 初始只取根一层
       $('#tree').innerHTML = '';
       $('#tree').appendChild(buildRow(nd.node, 0));
       $('#detailEmpty').style.display = '';
       $('#detail').style.display = 'none';
       showTab('detail');
     } catch (e) {
-      toast('打开表失败: ' + e, true);
+      toast(T('toast.openFail') + ': ' + e, true);
       location.hash = '#/';
     }
   }
@@ -532,7 +763,7 @@
       state.tinfo = Object.assign({}, state.tinfo, out);
       $('#tblName').textContent = out.name;
       $('#tblName').title = out.note || out.name;
-      document.title = out.name + ' · 问义树';
+      document.title = out.name + ' · ' + T('app.titleShort');
     });
   };
 
@@ -540,16 +771,14 @@
 
   function applyGateLabel() {
     const choice = state.mode === 'choice';
-    $('#gateLbTxt').textContent = choice ? '采纳线' : '门控';
-    $('#gateLb').title = choice
-        ? 'choice 采纳线 (0, 1]：单层胜出置信度低于此值落兜底'
-        : 'noul 绝对门控 (0, 1]，只影响其后的判定';
+    $('#gateLbTxt').textContent = T(choice ? 'gate.choice' : 'gate.noul');
+    $('#gateLb').title = T(choice ? 'gate.choiceTitle' : 'gate.noulTitle');
     const g = $('#gate');
     if (document.activeElement !== g) g.value = gateVal();
   }
 
   function renderStats(m) {
-    $('#stats').textContent = '落位 ' + m.docCount + ' 条';
+    $('#stats').textContent = Tf('hdr.docs', { n: m.docCount });
     if (state.mode === 'choice' && m.choiceGate != null) state.choiceGate = m.choiceGate;
     if (m.noulGate != null) state.gate = m.noulGate;
     const g = $('#gate');
@@ -559,15 +788,15 @@
   $('#gate').addEventListener('change', async () => {
     const v = parseFloat($('#gate').value);
     const choice = state.mode === 'choice';
-    const label = choice ? '采纳线' : '门控';
-    if (!(v > 0 && v <= 1)) { toast(label + '须在 (0, 1] 区间', true); $('#gate').value = gateVal(); return; }
+    const label = T(choice ? 'gate.choice' : 'gate.noul');
+    if (!(v > 0 && v <= 1)) { toast(Tf('toast.gateRange', { label }), true); $('#gate').value = gateVal(); return; }
     try {
-      const out = await apiPost(T() + '/gate', choice ? { choiceGate: v } : { noulGate: v });
+      const out = await apiPost(T0() + '/gate', choice ? { choiceGate: v } : { noulGate: v });
       if (choice) state.choiceGate = out.choiceGate; else state.gate = out.noulGate;
       $('#gate').value = gateVal();
-      toast(label + '已调整为 ' + gateVal());
+      toast(Tf('toast.gateOk', { label, value: gateVal() }));
     } catch (e) {
-      toast('调整失败: ' + e, true);
+      toast(T('toast.gateFail') + ': ' + e, true);
       $('#gate').value = gateVal();
     }
   });
@@ -604,14 +833,14 @@
     if (node.other) {
       const tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = state.mode === 'choice' ? '兜底选项' : '兜底';
+      tag.textContent = T(state.mode === 'choice' ? 'tag.otherChoice' : 'tag.otherNoul');
       row.appendChild(tag);
     }
     if (node.leaf) {
       const badge = document.createElement('span');
       badge.className = 'badge' + (node.docCount ? '' : ' zero');
       badge.textContent = node.docCount;
-      badge.title = '落位条数';
+      badge.title = T('badge.docCount');
       row.appendChild(badge);
     }
     if (node.yes) {
@@ -642,7 +871,7 @@
       if (node.children && node.children.length) {
         for (const c of node.children) kids.appendChild(buildRow(c, depth + 1));
       } else {
-        loadChildren(node.name, depth).catch(e => toast('加载失败: ' + e, true));
+        loadChildren(node.name, depth).catch(e => toast(T('toast.loadFail') + ': ' + e, true));
       }
     }
     return wrap;
@@ -666,12 +895,12 @@
     } catch (e) {
       state.expanded.delete(node.name);
       chev.textContent = '▸';
-      toast('加载失败: ' + e, true);
+      toast(T('toast.loadFail') + ': ' + e, true);
     }
   }
 
   async function loadChildren(name, depth) {
-    const d = await api(T() + '/node?name=' + encodeURIComponent(name));
+    const d = await api(T0() + '/node?name=' + encodeURIComponent(name));
     const kids = state.containers[name];
     if (!kids) return;
     kids.innerHTML = '';
@@ -683,14 +912,14 @@
     const wrap = state.wraps[name];
     if (!wrap) return;
     const depth = parseInt(wrap.querySelector('.row').dataset.depth, 10);
-    const d = await api(T() + '/node?name=' + encodeURIComponent(name));
+    const d = await api(T0() + '/node?name=' + encodeURIComponent(name));
     state.expanded.add(name);
     wrap.replaceWith(buildRow(d.node, depth));
   }
 
   $('#expandAll').onclick = async () => {
     try {
-      const t = await api(T() + '/tree');
+      const t = await api(T0() + '/tree');
       state.mode = t.mode;
       applyGateLabel();
       renderStats(t);
@@ -705,7 +934,7 @@
       box.innerHTML = '';
       box.appendChild(buildRow(t.root, 0));
     } catch (e) {
-      toast('加载失败: ' + e, true);
+      toast(T('toast.loadFail') + ': ' + e, true);
     }
   };
 
@@ -718,28 +947,26 @@
   function openMenu(x, y, node, row) {
     closeMenu();
     if (node.other) {              // 兜底：随父节点连带管理
-      toast(state.mode === 'choice'
-          ? '兜底选项「以上都不符合」为系统固定项（参与归一化），不可直接编辑——如需调整请操作其父节点'
-          : '兜底叶不参与判定请求（无判据、不可改名）——如需调整请操作其父节点');
+      toast(T(state.mode === 'choice' ? 'other.toastChoice' : 'other.toastNoul'));
       return;
     }
     menuEl = document.createElement('div');
     menuEl.className = 'menu';
     const editItem = () => {
       const e = document.createElement('div');
-      e.textContent = state.mode === 'choice' ? '✎ 修改选项（名称 / 描述）' : '✎ 修改节点（name / yes / no）';
+      e.textContent = T(state.mode === 'choice' ? 'menu.editChoice' : 'menu.editNoul');
       e.onclick = () => { closeMenu(); openEditDialog(node); };
       menuEl.appendChild(e);
     };
     {
       const item = document.createElement('div');
-      item.textContent = state.mode === 'choice' ? '＋ 增加选项（分支）' : '＋ 增加判断节点（jn）';
+      item.textContent = T(state.mode === 'choice' ? 'menu.addChoice' : 'menu.addNoul');
       item.onclick = () => { closeMenu(); openDialog(node); };
       menuEl.appendChild(item);
       if (row.dataset.depth !== '0') {        // 根节点不可改不可删
         editItem();
         const del = document.createElement('div');
-        del.textContent = '－ 删除节点（含子树与落位数据）';
+        del.textContent = T('menu.del');
         del.style.color = '#ef7d7d';
         del.onclick = () => { closeMenu(); confirmDelete(node); };
         menuEl.appendChild(del);
@@ -754,27 +981,25 @@
   function openDialog(parentNode) {
     const choice = state.mode === 'choice';
     const scope = choice
-        ? (parentNode.leaf
-            ? '该叶将分化为本层的一个选项；父层相关存量按完整选项列表重判（每条 1 次请求），选中此项则迁入'
-            : '将在该层新增一个选项；父层兜底存量按完整选项列表重判（每条 1 次请求），选中此项则迁入')
+        ? (parentNode.leaf ? T('dlg.scopeChoiceLeaf') : T('dlg.scopeChoiceInternal'))
         : (parentNode.leaf
-            ? '该叶为叶子节点：将分化为判断节点，其全部存量逐条重判（每条 1 次请求），过门进新节点，其余进 ' + esc(parentNode.name) + '_OTHER'
-            : '将对其兜底叶 ' + esc(parentNode.name) + '_OTHER 的存量逐条重判（每条 1 次请求），过门迁入新节点');
+            ? Tf('dlg.scopeNoulLeaf', { other: parentNode.name + '_OTHER' })
+            : Tf('dlg.scopeNoulInternal', { other: parentNode.name + '_OTHER' }));
     const ov = document.createElement('div');
     ov.className = 'overlay';
     ov.innerHTML =
       '<div class="dialog">' +
-      '  <h3>在 <code>' + esc(parentNode.name) + '</code> 下' + (choice ? '增加选项' : '增加判断节点') + '</h3>' +
-      '  <div class="dlg-note">' + scope + (choice ? '' : '。判据用中文事件级原子断言。') + '</div>' +
-      '  <label>' + (choice ? '选项名（新分支）' : '节点名 NAME') + '</label>' +
-      '  <input id="jn-name" placeholder="' + (choice ? '如 运费争议' : '如 定位异常') + '">' +
-      '  <label>' + (choice ? '选项描述（可选；留空用选项名本身）' : 'yes 判据（是侧原子断言）') + '</label>' +
-      '  <input id="jn-yes" placeholder="' + (choice ? '司机对运费金额、扣款或计价有异议…' : '司机报告系统定位错误或导航找不到入口…') + '">' +
+      '  <h3>' + esc(Tf(choice ? 'dlg.addTitleChoice' : 'dlg.addTitleNoul', { parent: parentNode.name })) + '</h3>' +
+      '  <div class="dlg-note">' + esc(scope + (choice ? '' : T('dlg.critHint'))) + '</div>' +
+      '  <label>' + esc(T(choice ? 'dlg.nameLabelChoice' : 'dlg.nameLabelNoul')) + '</label>' +
+      '  <input id="jn-name" placeholder="' + esc(T(choice ? 'dlg.namePhChoice' : 'dlg.namePhNoul')) + '">' +
+      '  <label>' + esc(T(choice ? 'dlg.yesLabelChoice' : 'dlg.yesLabelNoul')) + '</label>' +
+      '  <input id="jn-yes" placeholder="' + esc(T(choice ? 'dlg.yesPhChoice' : 'dlg.yesPhNoul')) + '">' +
       (choice ? '' :
-      '  <label>no 判据（留空自动生成）</label>' +
+      '  <label>' + esc(T('dlg.noLabel')) + '</label>' +
       '  <input id="jn-no" placeholder="">') +
-      '  <div class="actions"><button class="btn" id="jn-cancel">取消</button>' +
-      '  <button class="btn primary" id="jn-ok">创建</button></div>' +
+      '  <div class="actions"><button class="btn" id="jn-cancel">' + esc(T('dlg.cancel')) + '</button>' +
+      '  <button class="btn primary" id="jn-ok">' + esc(T('dlg.create')) + '</button></div>' +
       '</div>';
     document.body.appendChild(ov);
     ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
@@ -782,10 +1007,10 @@
     const val = id => ov.querySelector('#' + id).value.trim();
     ov.querySelector('#jn-ok').onclick = async () => {
       const body = { parent: parentNode.name, name: val('jn-name'), yes: choice ? (val('jn-yes') || '') : val('jn-yes'), no: choice ? '' : (val('jn-no') || '') };
-      if (!body.name || (!choice && !body.yes)) { toast(choice ? '选项名必填' : '节点名与 yes 判据必填', true); return; }
+      if (!body.name || (!choice && !body.yes)) { toast(T(choice ? 'dlg.errChoice' : 'dlg.errNoul'), true); return; }
       ov.querySelector('#jn-ok').disabled = true;
       try {
-        const rep = await fetch(T() + '/node', {
+        const rep = await fetch(T0() + '/node', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
@@ -795,11 +1020,11 @@
         ov.remove();
         const movedTxt = (out.moves || []).filter(m => m.moved)
             .map(m => m.docId + ' ' + (+m.prob).toFixed(2)).join('、');
-        toast('已新增 ' + out.node + ' · 重判 ' + out.judged + ' 条' +
-              (movedTxt ? ' · 迁入: ' + movedTxt : ' · 无存量迁入'));
+        toast(Tf('toast.added', { node: out.node, judged: out.judged }) +
+              (movedTxt ? T('toast.movedIn') + movedTxt : T('toast.movedNone')));
         await refreshNode(parentNode.name);
       } catch (e) {
-        toast('增长失败: ' + e, true);
+        toast(T('dlg.growFail') + ': ' + e, true);
         ov.querySelector('#jn-ok').disabled = false;
       }
     };
@@ -821,17 +1046,17 @@
     ov.className = 'overlay';
     ov.innerHTML =
       '<div class="dialog">' +
-      '  <h3>修改' + (choice ? '选项' : '节点') + ' <code>' + esc(node.name) + '</code></h3>' +
-      '  <div class="dlg-note">零模型调用。改名会连带重命名兜底叶并更新落位指针；改判据不重判已落位数据（后续落位/检索按新判据收正）。修改记录随快照持久化，重启自动回放。</div>' +
-      '  <label>' + (choice ? '选项名' : '节点名') + '</label>' +
+      '  <h3>' + esc(Tf(choice ? 'dlg.editTitleChoice' : 'dlg.editTitleNoul', { name: node.name })) + '</h3>' +
+      '  <div class="dlg-note">' + esc(T('dlg.editNote')) + '</div>' +
+      '  <label>' + esc(T(choice ? 'dlg.edNameChoice' : 'dlg.edNameNoul')) + '</label>' +
       '  <input id="ed-name" value="' + esc(node.name) + '">' +
-      '  <label>' + (choice ? '选项描述（可选；留空保持）' : 'yes 判据（是侧原子断言；留空不改）') + '</label>' +
+      '  <label>' + esc(T(choice ? 'dlg.edYesChoice' : 'dlg.edYesNoul')) + '</label>' +
       '  <input id="ed-yes" value="' + esc(node.yes || '') + '">' +
       (choice ? '' :
-      '  <label>no 判据（留空自动生成）</label>' +
+      '  <label>' + esc(T('dlg.noLabel')) + '</label>' +
       '  <input id="ed-no" value="' + esc(node.no || '') + '">') +
-      '  <div class="actions"><button class="btn" id="ed-cancel">取消</button>' +
-      '  <button class="btn primary" id="ed-ok">保存</button></div>' +
+      '  <div class="actions"><button class="btn" id="ed-cancel">' + esc(T('dlg.cancel')) + '</button>' +
+      '  <button class="btn primary" id="ed-ok">' + esc(T('dlg.save')) + '</button></div>' +
       '</div>';
     document.body.appendChild(ov);
     ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
@@ -839,10 +1064,10 @@
     const val = id => ov.querySelector('#' + id).value.trim();
     ov.querySelector('#ed-ok').onclick = async () => {
       const body = { name: node.name, newName: val('ed-name'), yes: choice ? (val('ed-yes') || '') : val('ed-yes'), no: choice ? null : (val('ed-no') || null) };
-      if (!body.newName) { toast('名称不可为空', true); return; }
+      if (!body.newName) { toast(T('dlg.errNameEmpty'), true); return; }
       ov.querySelector('#ed-ok').disabled = true;
       try {
-        const r = await fetch(T() + '/node', {
+        const r = await fetch(T0() + '/node', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
@@ -852,7 +1077,7 @@
         ov.remove();
         const renamed = out.newName !== out.oldName;
         if (renamed) renameKey(out.oldName, out.newName);
-        toast('已修改 ' + out.newName + (renamed ? '（原 ' + out.oldName + '）' : ''));
+        toast(Tf('toast.editDone', { name: out.newName }) + (renamed ? Tf('toast.renamed', { old: out.oldName }) : ''));
         if (out.parent) await refreshNode(out.parent);
         if (state.selectedRow && !document.body.contains(state.selectedRow)) {
           state.selectedRow = null;
@@ -860,7 +1085,7 @@
           $('#detailEmpty').style.display = '';
         }
       } catch (e) {
-        toast('修改失败: ' + e, true);
+        toast(T('dlg.editFail') + ': ' + e, true);
         ov.querySelector('#ed-ok').disabled = false;
       }
     };
@@ -873,10 +1098,10 @@
     ov.className = 'overlay';
     ov.innerHTML =
       '<div class="dialog">' +
-      '  <h3>删除 <code>' + esc(node.name) + '</code>？</h3>' +
-      '  <div class="dlg-note">将同时删除其全部子节点（含兜底叶），并清理这些叶上的全部落位数据，此操作不可撤销。</div>' +
-      '  <div class="actions"><button class="btn" id="del-cancel">取消</button>' +
-      '  <button class="btn danger" id="del-ok">删除</button></div>' +
+      '  <h3>' + esc(Tf('dlg.delTitle', { name: node.name })) + '</h3>' +
+      '  <div class="dlg-note">' + esc(T('dlg.delNote')) + '</div>' +
+      '  <div class="actions"><button class="btn" id="del-cancel">' + esc(T('dlg.cancel')) + '</button>' +
+      '  <button class="btn danger" id="del-ok">' + esc(T('tbl.delBtn')) + '</button></div>' +
       '</div>';
     document.body.appendChild(ov);
     ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
@@ -884,7 +1109,7 @@
     ov.querySelector('#del-ok').onclick = async () => {
       ov.querySelector('#del-ok').disabled = true;
       try {
-        const r = await fetch(T() + '/node?name=' + encodeURIComponent(node.name), { method: 'DELETE' });
+        const r = await fetch(T0() + '/node?name=' + encodeURIComponent(node.name), { method: 'DELETE' });
         const out = await r.json().catch(() => ({}));
         if (!r.ok) { toast(out.error || ('HTTP ' + r.status), true); ov.querySelector('#del-ok').disabled = false; return; }
         ov.remove();
@@ -901,11 +1126,10 @@
         }
         state.docCount = out.docCount;
         renderStats(out);
-        toast('已删除 ' + node.name + ' · 移除 ' + removed.length + ' 个节点 · 清理 ' +
-              (out.docsRemoved || []).length + ' 条文档');
+        toast(Tf('toast.delDone', { name: node.name, nodes: removed.length, docs: (out.docsRemoved || []).length }));
         await refreshNode(out.parent);
       } catch (e) {
-        toast('删除失败: ' + e, true);
+        toast(T('dlg.delFail') + ': ' + e, true);
         ov.querySelector('#del-ok').disabled = false;
       }
     };
@@ -922,10 +1146,12 @@
     $('#detailEmpty').style.display = 'none';
     const d = $('#detail');
     d.style.display = 'block';
-    d.innerHTML = '<div class="loading">沿路径查询中…</div>';
+    d.innerHTML = '<div class="loading">' + esc(T('detail.loading')) + '</div>';
     try {
-      const info = await api(T() + '/leaf?name=' + encodeURIComponent(name));
+      const info = await api(T0() + '/leaf?name=' + encodeURIComponent(name));
+      state.ndName = info.leaf ? null : name;   // 节点直取响应的竞态守卫（选中已切换则丢弃）
       renderDetail(info);
+      if (!info.leaf) loadNodeDocs(name);
     } catch (e) {
       d.innerHTML = '<div class="error">' + esc(e) + '</div>';
     }
@@ -937,32 +1163,32 @@
         .join('<span class="sep">▸</span>');
     let html =
       '<div class="d-head"><span class="d-name">' + esc(info.name) + '</span>' +
-      (info.other ? '<span class="tag">' + (state.mode === 'choice' ? '兜底选项' : '兜底') + '</span>' : '') +
-      '<span class="d-count">' + (isNode ? '子树落位 ' + info.docTotal + ' 条' : info.docs.length + ' 条落位') + '</span></div>' +
+      (info.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.choice' : 'tag.noul')) + '</span>' : '') +
+      '<span class="d-count">' + esc(Tf(isNode ? 'detail.subtreeDocs' : 'detail.leafDocs', { n: isNode ? info.docTotal : info.docs.length })) + '</span></div>' +
       '<div class="crumbs">' + crumbs + '</div>';
     if (info.yes || info.no) {
       html += '<div class="d-crit"><div>' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(info.yes) + '</div>' +
               (state.mode === 'choice' ? '' : '<div>✗ ' + esc(info.no || '—') + '</div>') + '</div>';
     } else if (info.other) {
-      html += '<div class="d-crit">' + (state.mode === 'choice'
-          ? '兜底选项「以上都不符合」：本层无选项胜出，或胜出置信度低于采纳线 ' + state.choiceGate + ' 时落位于此'
-          : '兜底叶不参与判定请求（无判据）——本层无真实判据过门时落位于此') + '</div>';
+      html += '<div class="d-crit">' + esc(Tf(state.mode === 'choice'
+          ? 'detail.otherChoice' : 'detail.otherNoul', { gate: state.choiceGate })) + '</div>';
     }
     if (isNode) {
-      html += '<div class="d-sub">子节点 · ' + (info.children || []).length + '</div>';
+      html += '<div class="d-sub">' + esc(Tf('detail.children', { n: (info.children || []).length })) + '</div>';
       for (const c of (info.children || [])) {
         html += '<div class="row">' +
             '<span class="icon" style="color:' + (c.leaf ? '#e8b64c' : '#5eead4') + '">' + (c.leaf ? '◇' : '◆') + '</span>' +
             '<span class="name"' + (c.leaf ? ' style="color:#f2d38b"' : '') + '>' + esc(c.name) + '</span>' +
-            (c.other ? '<span class="tag">' + (state.mode === 'choice' ? '兜底选项' : '兜底') + '</span>' : '') +
+            (c.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.choice' : 'tag.noul')) + '</span>' : '') +
             (c.leaf ? '<span class="badge' + (c.docCount ? '' : ' zero') + '">' + c.docCount + '</span>' : '') +
             (c.yes ? '<div class="crit">' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(c.yes) + '</div>' : '') +
             '</div>';
       }
+      html += '<div class="d-sub" id="nd-head">' + esc(T('detail.subContent')) + '</div><div id="nd-list"></div>';
     } else {
-      html += '<div class="d-sub">落位数据</div>';
+      html += '<div class="d-sub">' + esc(T('detail.docs')) + '</div>';
       if (!info.docs.length) {
-        html += '<div class="d-none">（该叶暂无落位）</div>';
+        html += '<div class="d-none">' + esc(T('detail.noDocs')) + '</div>';
       } else {
         for (const doc of info.docs) {
           html += '<div class="doc"><span class="doc-id">' + esc(doc.id) + '</span>' +
@@ -971,6 +1197,47 @@
       }
     }
     $('#detail').innerHTML = html;
+  }
+
+  /** 节点直取：分页拉取子树落位内容（每次 10 条），填进详情面板；选中已切换则丢弃响应。 */
+  async function loadNodeDocs(name, append) {
+    const offset = append ? (state.ndOffset || 0) : 0;
+    try {
+      const nd = await api(T0() + '/docs?node=' + encodeURIComponent(name) + '&limit=10&offset=' + offset);
+      if (state.ndName !== name) return;
+      const head = $('#nd-head'), list = $('#nd-list');
+      if (!head || !list) return;
+      if (!append) {
+        list.innerHTML = '';
+        head.textContent = Tf('detail.subContentN', { n: nd.total });
+        if (!nd.docs.length) {
+          list.innerHTML = '<div class="d-none">' + esc(T('detail.noDocs')) + '</div>';
+          return;
+        }
+      }
+      const more = $('#nd-more');
+      if (more) more.remove();
+      let html = '';
+      for (const doc of nd.docs) {
+        html += '<div class="doc"><span class="doc-id">' + esc(doc.id) + '</span>' +
+                '<div class="doc-content">' + esc(doc.content) + '</div>' +
+                (doc.viaLeaves && doc.viaLeaves.length
+                    ? '<div class="doc-via">@' + doc.viaLeaves.map(esc).join(' · @') + '</div>' : '') +
+                '</div>';
+      }
+      list.insertAdjacentHTML('beforeend', html);
+      state.ndOffset = offset + nd.docs.length;
+      if (nd.truncated) {
+        list.insertAdjacentHTML('beforeend',
+            '<div class="d-more" id="nd-more">' + esc(Tf('detail.loadMore', { n: nd.total })) + '</div>');
+        $('#nd-more').onclick = () => loadNodeDocs(name, true);
+      }
+    } catch (e) {
+      if (state.ndName === name) {
+        const list = $('#nd-list');
+        if (list) list.innerHTML = '<div class="error">' + esc(e) + '</div>';
+      }
+    }
   }
 
   let toastTimer = null;
@@ -1018,7 +1285,7 @@
 
   async function loadModels(provider, current) {
     const sel = $('#model');
-    sel.innerHTML = '<option value="">加载中…</option>';
+    sel.innerHTML = '<option value="">' + esc(T('model.loading')) + '</option>';
     try {
       const d = await api('/api/models?provider=' + encodeURIComponent(provider));
       state.allModels = d.models || [];
@@ -1026,12 +1293,12 @@
       sel.innerHTML = '';
       const ph = document.createElement('option');
       ph.value = '';
-      ph.textContent = '— 选择模型 —';
+      ph.textContent = T('model.pickPh');
       sel.appendChild(ph);
       for (const m of state.allModels) {
         const o = document.createElement('option');
         o.value = m.id;
-        o.textContent = m.id + (m.free ? ' ·免费' : '') + (m.decisions ? ' ⚡' : '');
+        o.textContent = m.id + (m.free ? T('model.free') : '') + (m.decisions ? ' ⚡' : '');
         sel.appendChild(o);
       }
       applyModelFilter();
@@ -1039,9 +1306,9 @@
       // 必须显式选一次模型（触发 change → POST /api/model）才真正热切换，
       // 避免程序赋值不触发 change 造成的"看起来选了、实际后端没切"假象
       if (current && [...sel.options].some(o => o.value === current)) sel.value = current;
-      if (d.source === 'fallback') toast('模型列表为静态候选（上游列表不可达或缺凭据）');
+      if (d.source === 'fallback') toast(T('model.fallback'));
     } catch (e) {
-      sel.innerHTML = '<option value="">列表不可用</option>';
+      sel.innerHTML = '<option value="">' + esc(T('model.unavailable')) + '</option>';
     }
   }
 
@@ -1069,15 +1336,15 @@
     try {
       const out = await apiPost('/api/model', { provider, model });
       state.backend = out.backend;
-      toast('已切换: ' + out.backend + ' · ' + out.model + '（对所有表生效）');
+      toast(Tf('model.switched', { backend: out.backend, model: out.model }));
     } catch (e) {
-      toast('切换失败: ' + e, true);
+      toast(T('model.switchFail') + ': ' + e, true);
       await loadModels(provider, null);
     }
     $('#model').disabled = false;
   }
 
-  // ── 控制台（add 落位 / search 检索，文本触发）──────────────────
+  // ── 控制台（add 落位 / search 检索，文本触发；add 多行 = 批量导入）──
 
   let consoleMode = 'add';
   function setMode(m) {
@@ -1086,13 +1353,11 @@
       b.classList.toggle('active', b.dataset.mode === m);
     }
     $('#q-id-row').style.display = m === 'add' ? '' : 'none';
-    $('#q-go').textContent = m === 'add' ? '落位' : '检索';
-    $('#q-hint').textContent = m === 'add' ? 'Enter 落位 · Shift+Enter 换行' : 'Enter 检索 · Shift+Enter 换行';
-    $('#q-input').placeholder = m === 'add'
-        ? (state.mode === 'choice'
-            ? '粘贴一条内容，按选项逐层单选下行落位（同 ID 重落替换旧落位）'
-            : '粘贴一条司机话术，按判据树落位（同 ID 重落替换旧落位）')
-        : '输入检索语句，如：哪些司机嫌运费太低不赚钱';
+    $('#q-go').textContent = T(m === 'add' ? 'q.goAdd' : 'q.goSearch');
+    $('#q-hint').textContent = T(m === 'add' ? 'q.hintAdd' : 'q.hintSearch');
+    $('#q-input').placeholder = T(m === 'add'
+        ? (state.mode === 'choice' ? 'q.phAddChoice' : 'q.phAddNoul')
+        : 'q.phSearch');
   }
   for (const b of document.querySelectorAll('#tab-quest .q-modes .tab')) {
     b.onclick = () => setMode(b.dataset.mode);
@@ -1100,17 +1365,23 @@
 
   async function runConsole() {
     const text = $('#q-input').value.trim();
-    if (!text) { toast(consoleMode === 'add' ? '请输入内容正文' : '请输入检索语句', true); return; }
+    if (!text) { toast(T(consoleMode === 'add' ? 'q.emptyAdd' : 'q.emptySearch'), true); return; }
     const out = $('#q-out');
-    out.innerHTML = '<div class="loading">' + (consoleMode === 'add' ? '逐层判定落位中…' : '逐层判定中…') + '</div>';
+    out.innerHTML = '<div class="loading">' + esc(T(consoleMode === 'add' ? 'q.loadingAdd' : 'q.loadingQuest')) + '</div>';
     try {
       if (consoleMode === 'add') {
-        const body = { content: text };
-        const idv = $('#q-doc-id').value.trim();
-        if (idv) body.id = idv;
-        renderAdd(await apiPost(T() + '/add', body));
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length);
+        if (lines.length > 1) {          // 多行 = 批量导入（每行一条；文档 ID 字段不适用，ID 自动生成）
+          const docs = lines.map(l => ({ content: l }));
+          renderAddBatch(await apiPost(T0() + '/addBatch', { docs }));
+        } else {
+          const body = { content: lines[0] };
+          const idv = $('#q-doc-id').value.trim();
+          if (idv) body.id = idv;
+          renderAdd(await apiPost(T0() + '/add', body));
+        }
       } else {
-        renderQuest(await apiPost(T() + '/quest', { query: text }));
+        renderQuest(await apiPost(T0() + '/quest', { query: text }));
       }
     } catch (e) {
       out.innerHTML = '<div class="error">' + esc(e) + '</div>';
@@ -1124,7 +1395,7 @@
   // 判定轨迹一步：choice 模式显示胜出选项与置信度，noul 模式显示各分支 P(yes)
   function stepLine(s) {
     if (s.choice != null) {
-      let t = '✓ ' + esc(s.choice) + ' · 置信度 ' + (s.confidence != null ? (+s.confidence).toFixed(2) : '—');
+      let t = '✓ ' + esc(s.choice) + ' · ' + (s.confidence != null ? (+s.confidence).toFixed(2) : '—');
       const pk = Object.keys(s.probs || {});
       if (pk.length > 1) {
         t += ' <span class="dim">· ' + esc(pk.map(k => k + ' ' + (s.probs[k] == null ? '—' : (+s.probs[k]).toFixed(2))).join(' · ')) + '</span>';
@@ -1135,17 +1406,22 @@
         .map(k => k + ' ' + (s.probs[k] == null ? '—' : (+s.probs[k]).toFixed(2))).join(' · '));
   }
 
-  function renderAdd(d) {
-    let html = '<div class="q-sub">落位完成 · ' + esc(d.id) + '</div>';
-    html += d.leaves.length
-        ? '<div>' + d.leaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
-        : '<div class="q-none">（无叶名——异常，正常应至少落兜底' + (state.mode === 'choice' ? '选项' : '叶') + '）</div>';
-    html += '<details class="judge"><summary>判定轨迹（' + d.steps.length + ' 次请求）</summary>';
-    for (const s of d.steps) {
+  function traceHtml(steps) {
+    let html = '<details class="judge"><summary>' + esc(Tf('add.trace', { n: steps.length })) + '</summary>';
+    for (const s of steps) {
       html += '<div class="q-step"><b>@' + esc(s.node) + '</b> ' + stepLine(s) +
           ' <span class="dim">[' + s.latencyMs + 'ms · in ' + s.inputTokens + ' / out ' + s.outputTokens + ']</span></div>';
     }
-    html += '</details><div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
+    return html + '</details>';
+  }
+
+  function renderAdd(d) {
+    let html = '<div class="q-sub">' + esc(Tf('add.done', { id: d.id })) + '</div>';
+    html += d.leaves.length
+        ? '<div>' + d.leaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
+        : '<div class="q-none">' + esc(T(state.mode === 'choice' ? 'add.noLeafChoice' : 'add.noLeafNoul')) + '</div>';
+    html += traceHtml(d.steps);
+    html += '<div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
     $('#q-out').innerHTML = html;
     renderStats(d);
     for (const lf of d.leaves) {          // 已展开的落位叶原位刷新计数
@@ -1153,44 +1429,57 @@
     }
   }
 
-  async function runQuest() {
-    const q = $('#q-input').value.trim();
-    if (!q) { toast('请输入查询语句', true); return; }
-    const out = $('#q-out');
-    out.innerHTML = '<div class="loading">逐层判定中…</div>';
-    try {
-      renderQuest(await apiPost(T() + '/quest', { query: q }));
-    } catch (e) {
-      out.innerHTML = '<div class="error">' + esc(e) + '</div>';
+  function renderAddBatch(d) {
+    let html = '<div class="q-sub">' + esc(Tf('batch.done', { ok: d.added, fail: (d.failed || []).length, total: d.total })) + '</div>';
+    for (const r of (d.results || [])) {
+      html += '<div style="margin-bottom:4px"><span class="doc-id">' + esc(r.id) + '</span>' +
+          (r.leaves || []).map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>';
+    }
+    for (const f of (d.failed || [])) {
+      html += '<div class="q-step" style="color:#ef7d7d">' + esc(Tf('batch.rowFail', { index: f.index, error: f.error })) + '</div>';
+    }
+    html += '<div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
+    $('#q-out').innerHTML = html;
+    renderStats(d);
+    const hitLeaves = new Set();
+    for (const r of (d.results || [])) (r.leaves || []).forEach(l => hitLeaves.add(l));
+    for (const lf of hitLeaves) {
+      if (state.wraps[lf]) refreshNode(lf).catch(() => {});
     }
   }
 
   function renderQuest(d) {
-    let html = '<div class="q-sub">命中叶 · ' + (d.matchedLeaves.length || '无') + '</div>';
+    let html = '<div class="q-sub">' + esc(Tf('quest.hits', { n: d.matchedLeaves.length || 0 })) +
+        (d.fastPath ? '<span class="fast-badge">' + esc(T('quest.fast')) + '</span>' : '') + '</div>';
     html += d.matchedLeaves.length
         ? '<div>' + d.matchedLeaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
-        : '<div class="q-none">' + (state.mode === 'choice'
-            ? '没有命中（choice 单路径下行：途中置信度低于采纳线 ' + state.choiceGate + ' 或落兜底即止）'
-            : '没有叶过门（沿途 P(yes) 均低于门控 ' + state.gate + '）') + '</div>';
-    html += '<div class="q-sub">排序文档 · ' + d.ranked.length +
-        (state.mode === 'choice' ? '（分数 = 路径各层胜出概率连乘）' : '（分数 = 命中叶数）') + '</div>';
+        : '<div class="q-none">' + esc(Tf(state.mode === 'choice'
+            ? 'quest.noHitChoice' : 'quest.noHitNoul', { gate: state.choiceGate })) + '</div>';
+    html += '<div class="q-sub">' + esc(Tf('quest.rank', { n: d.ranked.length })) +
+        '<span class="dim">' + esc(T(state.mode === 'choice' ? 'quest.scoreChoice' : 'quest.scoreNoul')) + '</span></div>';
     html += d.ranked.length
         ? d.ranked.map(r =>
             '<div class="q-rank"><span class="q-score">' + esc(fmtScore(r.score)) + '</span>' +
             '<div style="min-width:0"><span class="doc-id">' + esc(r.docId) + '</span>' +
             '<div class="doc-content">' + esc(r.content || '') + '</div>' +
             '<div class="q-meta">via ' + (r.viaLeaves || []).map(esc).join(' + ') + '</div></div></div>').join('')
-        : '<div class="q-none">（无命中文档）</div>';
-    html += '<details class="judge"><summary>判定轨迹（' + d.steps.length + ' 次请求）</summary>';
-    for (const s of d.steps) {
-      html += '<div class="q-step"><b>@' + esc(s.node) + '</b> ' + stepLine(s) +
-          ' <span class="dim">[' + s.latencyMs + 'ms · in ' + s.inputTokens + ' / out ' + s.outputTokens + ']</span></div>';
-    }
-    html += '</details><div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
+        : '<div class="q-none">' + esc(T('quest.noDocs')) + '</div>';
+    html += traceHtml(d.steps);
+    html += '<div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
     $('#q-out').innerHTML = html;
   }
 
+  // ── 语言切换 ───────────────────────────────────────────────────
+
+  $('#langBtn').onclick = () => {
+    LANG = LANG === 'zh' ? 'en' : 'zh';
+    localStorage.setItem('sq-lang', LANG);
+    applyI18n();
+    if (state.tid) openTable(state.tid); else showStart();
+  };
+
   route();
+  applyI18n();
   initModelBar();
 </script>
 </body>

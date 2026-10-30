@@ -15,6 +15,33 @@ backend=mock
 noulGate=0.7
 choiceGate=0.6
 
+# 查询结果缓存容量（条）：同一条查询原文再次检索零模型直返（noul/choice 均生效），
+# 按命中次数排序淘汰（调用最多最不易淘汰）；0=关闭；热载，仅内存不落盘
+questCacheSize=256
+
+# ── 判定提示词（系统侧组装文案；判据 yes/no 与规则文本归树，不在这里）──
+# 热载：保存即应用到全部表，同时清空各表查询缓存
+# 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文；删行或留空=内置默认
+# noul instructions 仅 jev / respan 方言下发；openrouter（非 respan）与百炼下发的是判据文本（含 criterion 包裹）
+# 规则（state.rule；新表默认值，热载置换仍为默认文本的表，已自定义的不动）
+prompt.rule.add=判定输入内容与哪个分支的判据相符。
+prompt.rule.search=判断查询内容在寻找哪个分支下的内容。
+# noul instructions（questions{name}.instructions；{name}=分支名）
+prompt.noul.add.instructions={name}
+prompt.noul.search.instructions={name}
+# noul 判据包裹（判定前对判据文本套模板；{yes}=判据原文、{name}=分支名）
+# add 默认恒等 {yes}（落位行为不变）；search 默认包检索框架，让「所有悲伤的话」这类
+# 泛查询能过机制描述型判据——框架落在模型真正读的判据字段里，树数据保持纯定义
+prompt.noul.add.criterion={yes}
+prompt.noul.search.criterion=该查询的结果应包含满足以下描述的内容：{yes}
+# choice 问句（questions.q.instructions；{node}=层节点名，ROOT 层用 root 键）
+prompt.choice.add.root=这句话最符合哪一类？
+prompt.choice.add.node={node}
+prompt.choice.search.root=这句话最符合哪一类？
+prompt.choice.search.node={node}
+# choice 兜底选项描述（criteria[X_OTHER]）
+prompt.choice.other=以上都不符合
+
 # 预制层级分支 schema（类似建表的字段声明）
 schema=driver-intent-schema.json
 

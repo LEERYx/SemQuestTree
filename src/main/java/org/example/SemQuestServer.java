@@ -20,6 +20,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,13 +41,15 @@ import java.util.concurrent.Executors;
  *   GET  /api/t/&lt;id&gt;          → 表详情（元信息 + metaMap）
  *   GET  /api/t/&lt;id&gt;/tree     → 全树结构 JSON（附表名/备注）
  *   GET  /api/t/&lt;id&gt;/leaf?name=X → 节点详情 JSON（路径 + 判据 + 落位正文；叶与内部节点共用视图）
+ *   GET  /api/t/&lt;id&gt;/docs?node=X → 节点直取 JSON（子树全部叶的落位内容，零模型调用；limit 缺省 500）
  *   POST /api/t/&lt;id&gt;/node     → 增长判断节点 {parent,name,yes,no}：补层挂靠，父节点兜底存量逐条
  *                               重判过门迁入（choice 模式即新增选项）；报告回 JSON
  *   PUT  /api/t/&lt;id&gt;/node     → 修改节点 {name, newName?, yes, no}：改名/改判据，零模型调用
  *   DELETE /api/t/&lt;id&gt;/node?name=X → 删除节点及其整个子树（含兜底叶），同步清理 grown/edits
  *   POST /api/t/&lt;id&gt;/gate     → 调参 {gate}（noul 门控）/ {choiceGate}（choice 采纳线），落盘
  *   POST /api/t/&lt;id&gt;/add      → 落位 {content, id?}：一条语料按判据下行落叶，随快照落盘
- *   POST /api/t/&lt;id&gt;/quest    → 查询 {query}：自然语言检索，返回命中叶 + 排序文档 + 判定轨迹
+ *   POST /api/t/&lt;id&gt;/quest    → 查询 {query}：与节点名完全一致时直接返回该节点子树内容（零模型）；
+ *                                  否则自然语言检索，返回命中叶 + 排序文档 + 判定轨迹
  *   GET  /api/models          → 决策模型列表 ?provider=mock|jev|openrouter|bailian（上游零 token 元数据；
  *                               失败/缺凭据回静态候选；openrouter 置顶补入配置里的决策模型）
  *   GET/POST /api/model       → 当前 provider/model / 热切换 {provider,model}（仅凭据校验，零推理）
@@ -115,6 +118,32 @@ public final class SemQuestServer {
                     + ") 就绪：" + t.tree.docCount() + " 条落位 · 增长 " + t.grown.size()
                     + " · 修改 " + t.edits.size() + " · " + t.file.getFileName());
         }
+        // 查询缓存容量按配置应用到全部表（热载 watcher 只在配置变化时触发，初始值这里铺一次）
+        final int qcInit = Math.max(0, cfg.getInt("questCacheSize", 256));
+        for (Table t : tables.values()) {
+            synchronized (t) {
+                t.tree.setQuestCacheCap(qcInit);
+            }
+        }
+        // 判定提示词同上铺初始值（prompt.*，热载见 watcher）
+        final SemQuestTree.Prompts promptsInit = promptsOf(cfg);
+        for (Table t : tables.values()) {
+            synchronized (t) {
+                t.tree.setPrompts(promptsInit);
+            }
+        }
+        // 树级规则建表默认值取自 prompt.rule.*；启动时把仍带代码默认文本的旧表置换为配置值（自定义文本不动，置换落盘）
+        final String ruleAddInit = ruleOf(cfg, "prompt.rule.add", SemQuestTree.DEFAULT_RULE_ADD);
+        final String ruleSearchInit = ruleOf(cfg, "prompt.rule.search", SemQuestTree.DEFAULT_RULE_SEARCH);
+        for (Table t : tables.values()) {
+            synchronized (t) {
+                if (t.tree.swapDefaultRules(SemQuestTree.DEFAULT_RULE_ADD, ruleAddInit,
+                        SemQuestTree.DEFAULT_RULE_SEARCH, ruleSearchInit)) {
+                    persistTable(t);
+                    System.out.println("[启动] 表「" + t.name + "」树级规则已按 prompt.rule.* 置换");
+                }
+            }
+        }
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/", new StaticHandler(vizFile));
@@ -128,11 +157,14 @@ public final class SemQuestServer {
                 + "   （后端 " + backend.name() + " · 模型 " + sel.model + " · 门控 " + gate
                 + " · 采纳线 " + choiceGate + " · 表 " + tables.size() + " 张）");
 
-        // 配置热载：2s 轮询 properties mtime，保存即生效（双门控/超时/凭据/模型清单/各后端 url·model）。
-        // gate 应用到全部 noul 表，choiceGate 应用到全部 choice 表（随改随落盘）。
+        // 配置热载：2s 轮询 properties mtime，保存即生效（双门控/查询缓存容量/判定提示词/树级规则/超时/凭据/模型清单/各后端 url·model）。
+        // gate 应用到全部 noul 表，choiceGate 应用到全部 choice 表，questCacheSize 与 prompt.* 应用到全部表
+        // （提示词热载同时清空各表查询缓存；prompt.rule.* 仅置换规则仍等于上次应用文本的表，自定义文本不动，置换落盘）。
         // 不热载（重启生效）：server.port / server.data / server.viz / server.tables、schema、backend 首选。
         final Path cfgPath = Paths.get(System.getProperty("semquest.config", Config.DEFAULT_FILE));
         final long[] lastMtime = { cfgPath.toFile().lastModified() };
+        final SemQuestTree.Prompts[] lastPrompts = { null };
+        final String[] lastRules = { ruleAddInit, ruleSearchInit };   // 上次应用的 prompt.rule.* 值（启动铺底时已置换旧默认表）
         Thread watcher = new Thread(new Runnable() {
             public void run() {
                 while (true) {
@@ -167,6 +199,40 @@ public final class SemQuestServer {
                                 System.out.println("[热载] 表「" + t.name + "」采纳线 → " + cg);
                             }
                         }
+                        int qc = Math.max(0, cfg.getInt("questCacheSize", 256));
+                        for (Table t : tables.values()) {
+                            if (t.tree.questCacheCap() == qc) continue;
+                            synchronized (t) {
+                                t.tree.setQuestCacheCap(qc);
+                            }
+                            System.out.println("[热载] 表「" + t.name + "」查询缓存容量 → "
+                                    + (qc == 0 ? "关闭" : qc));
+                        }
+                        SemQuestTree.Prompts np = promptsOf(cfg);
+                        if (!np.equals(lastPrompts[0])) {
+                            for (Table t : tables.values()) {
+                                synchronized (t) {
+                                    t.tree.setPrompts(np);
+                                }
+                            }
+                            System.out.println("[热载] 判定提示词已更新（prompt.noul.* instructions/criterion / prompt.choice.* 问句与兜底文案）");
+                        }
+                        lastPrompts[0] = np;
+                        String nra = ruleOf(cfg, "prompt.rule.add", SemQuestTree.DEFAULT_RULE_ADD);
+                        String nrs = ruleOf(cfg, "prompt.rule.search", SemQuestTree.DEFAULT_RULE_SEARCH);
+                        if (!nra.equals(lastRules[0]) || !nrs.equals(lastRules[1])) {
+                            for (Table t : tables.values()) {
+                                synchronized (t) {
+                                    // 仅置换规则仍等于上次应用文本的表（自定义过的树不动）；置换落盘
+                                    if (t.tree.swapDefaultRules(lastRules[0], nra, lastRules[1], nrs)) {
+                                        persistTable(t);
+                                        System.out.println("[热载] 表「" + t.name + "」树级规则已按 prompt.rule.* 更新");
+                                    }
+                                }
+                            }
+                            lastRules[0] = nra;
+                            lastRules[1] = nrs;
+                        }
                         DecisionBackend nb = createBackendWithModel(cfg, sel.provider, sel.model,
                                 cfg.getInt("timeoutMs", 30000));
                         if (nb != null && nb.hasKey()) {
@@ -189,8 +255,25 @@ public final class SemQuestServer {
 
     // ── 多表持久化 ──────────────────────────────────────────────────
 
-    private static final String DEFAULT_RULE_ADD = "判定输入内容与哪个分支的判据相符。";
-    private static final String DEFAULT_RULE_SEARCH = "判断查询内容在寻找哪个分支下的内容。";
+    /** semquest.properties → 判定提示词（prompt.*，空值回内置默认）。 */
+    private static SemQuestTree.Prompts promptsOf(Config cfg) {
+        return new SemQuestTree.Prompts(
+                cfg.get("prompt.noul.add.instructions", null),
+                cfg.get("prompt.noul.search.instructions", null),
+                cfg.get("prompt.noul.add.criterion", null),
+                cfg.get("prompt.noul.search.criterion", null),
+                cfg.get("prompt.choice.add.root", null),
+                cfg.get("prompt.choice.add.node", null),
+                cfg.get("prompt.choice.search.root", null),
+                cfg.get("prompt.choice.search.node", null),
+                cfg.get("prompt.choice.other", null));
+    }
+
+    /** 配置字符串键：空白回默认值（规则键 prompt.rule.* 用，缺省 = 代码内置默认文本）。 */
+    private static String ruleOf(Config cfg, String key, String def) {
+        String v = cfg.get(key, null);
+        return v == null || v.trim().isEmpty() ? def : v.trim();
+    }
 
     /** 一张表 = 一棵树：内存态 + 磁盘文件（tables/&lt;id&gt;.json）+ 增长/修改回放记录。 */
     private static final class Table {
@@ -512,7 +595,10 @@ public final class SemQuestServer {
                     String id = newId(tablesDir);
                     SemQuestTree tree = SemQuestTree.createEmpty(backend, "choice".equals(mode),
                             cfg.getDouble("noulGate", 0.7), cfg.getDouble("choiceGate", 0.6),
-                            DEFAULT_RULE_ADD, DEFAULT_RULE_SEARCH);
+                            ruleOf(cfg, "prompt.rule.add", SemQuestTree.DEFAULT_RULE_ADD),
+                            ruleOf(cfg, "prompt.rule.search", SemQuestTree.DEFAULT_RULE_SEARCH));
+                    tree.setQuestCacheCap(Math.max(0, cfg.getInt("questCacheSize", 256)));
+                    tree.setPrompts(promptsOf(cfg));
                     Table t = new Table(id, name, note, System.currentTimeMillis(), false, tree,
                             tablesDir.resolve(id + ".json"),
                             new ArrayList<Map<String, Object>>(), new ArrayList<Map<String, Object>>());
@@ -583,7 +669,7 @@ public final class SemQuestServer {
         }
     }
 
-    /** /api/t/&lt;id&gt;/&lt;action&gt; 分发：meta(缺省)/tree/leaf/node/gate/quest/add。 */
+    /** /api/t/&lt;id&gt;/&lt;action&gt; 分发：meta(缺省)/tree/leaf/node/gate/quest/add/addBatch。 */
     private static final class TableRouter extends BaseHandler implements HttpHandler {
         private static final String PREFIX = "/api/t/";
         private final ConcurrentHashMap<String, Table> tables;
@@ -624,6 +710,8 @@ public final class SemQuestServer {
                 new TreeHandler().handle(t, ex);
             } else if ("leaf".equals(action)) {
                 new LeafHandler().handle(t, ex);
+            } else if ("docs".equals(action)) {
+                new DocsHandler().handle(t, ex);
             } else if ("node".equals(action)) {
                 new NodeHandler().handle(t, ex);
             } else if ("gate".equals(action)) {
@@ -632,6 +720,8 @@ public final class SemQuestServer {
                 new QuestHandler().handle(t, ex);
             } else if ("add".equals(action)) {
                 new AddHandler().handle(t, ex);
+            } else if ("addBatch".equals(action)) {
+                new AddBatchHandler().handle(t, ex);
             } else {
                 json(ex, 404, "{\"error\":" + Json.str("未知动作: " + action) + "}");
             }
@@ -661,6 +751,75 @@ public final class SemQuestServer {
                 return;
             }
             json(ex, 200, Json.write(info));
+        }
+    }
+
+    /** GET /api/t/&lt;id&gt;/docs?node=X → 节点直取：子树全部叶的落位内容（零模型调用）；limit 缺省 500、offset 缺省 0，超出给 truncated。 */
+    private static final class DocsHandler extends BaseHandler {
+
+        void handle(Table t, HttpExchange ex) throws IOException {
+            if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                ex.sendResponseHeaders(405, -1);
+                return;
+            }
+            String name = param(ex, "node");
+            if (name == null || name.trim().isEmpty()) {
+                json(ex, 400, "{\"error\":" + Json.str("缺 node 参数") + "}");
+                return;
+            }
+            int limit = 500;
+            String lim = param(ex, "limit");
+            if (lim != null && !lim.trim().isEmpty()) {
+                try {
+                    limit = Integer.parseInt(lim.trim());
+                } catch (NumberFormatException e) {
+                    json(ex, 400, "{\"error\":" + Json.str("limit 须为整数") + "}");
+                    return;
+                }
+                if (limit < 0) {
+                    json(ex, 400, "{\"error\":" + Json.str("limit 不可为负") + "}");
+                    return;
+                }
+            }
+            int offset = 0;
+            String off = param(ex, "offset");
+            if (off != null && !off.trim().isEmpty()) {
+                try {
+                    offset = Integer.parseInt(off.trim());
+                } catch (NumberFormatException e) {
+                    json(ex, 400, "{\"error\":" + Json.str("offset 须为整数") + "}");
+                    return;
+                }
+                if (offset < 0) {
+                    json(ex, 400, "{\"error\":" + Json.str("offset 不可为负") + "}");
+                    return;
+                }
+            }
+            SemQuestTree.NodeDocs nd;
+            try {
+                nd = t.tree.nodeDocs(name.trim());
+            } catch (IllegalArgumentException e) {
+                json(ex, 400, "{\"error\":" + Json.str(e.getMessage() == null ? "未知节点" : e.getMessage()) + "}");
+                return;
+            }
+            LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+            out.put("node", nd.node);
+            out.put("leaves", nd.leaves);
+            out.put("total", nd.docs.size());
+            List<Object> docs = new ArrayList<Object>();
+            int from = Math.min(offset, nd.docs.size());
+            int to = Math.min(from + limit, nd.docs.size());
+            for (int i = from; i < to; i++) {
+                SemQuestTree.NodeDoc d = nd.docs.get(i);
+                LinkedHashMap<String, Object> dm = new LinkedHashMap<String, Object>();
+                dm.put("id", d.id);
+                dm.put("content", d.content);
+                dm.put("viaLeaves", d.viaLeaves);
+                docs.add(dm);
+            }
+            out.put("docs", docs);
+            if (to < nd.docs.size()) out.put("truncated", true);
+            json(ex, 200, Json.write(out));
         }
     }
 
@@ -964,6 +1123,90 @@ public final class SemQuestServer {
         }
     }
 
+    /** 批量导入上限：一次请求最多语料条数。 */
+    private static final int ADD_BATCH_CAP = 500;
+
+    /**
+     * POST /api/t/&lt;id&gt;/addBatch {docs:[{id?, content}…]} → 批量导入：
+     * 逐条落位互不牵连（单条失败记入 failed 继续），全部结束后统一落盘一次。
+     */
+    private static final class AddBatchHandler extends BaseHandler {
+
+        @SuppressWarnings("unchecked")
+        void handle(Table t, HttpExchange ex) throws IOException {
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                ex.sendResponseHeaders(405, -1);
+                return;
+            }
+            Map<String, Object> req;
+            try {
+                req = Json.parseObject(readBody(ex));
+            } catch (Exception e) {
+                json(ex, 400, "{\"error\":" + Json.str("请求体不是合法 JSON") + "}");
+                return;
+            }
+            if (!(req.get("docs") instanceof List)) {
+                json(ex, 400, "{\"error\":" + Json.str("缺 docs 数组（每项 {id?, content}）") + "}");
+                return;
+            }
+            List<Object> docs = (List<Object>) req.get("docs");
+            if (docs.isEmpty()) {
+                json(ex, 400, "{\"error\":" + Json.str("docs 为空") + "}");
+                return;
+            }
+            if (docs.size() > ADD_BATCH_CAP) {
+                json(ex, 400, "{\"error\":" + Json.str("单次最多 " + ADD_BATCH_CAP + " 条，当前 "
+                        + docs.size() + " 条——请分批导入") + "}");
+                return;
+            }
+            List<Object> results = new ArrayList<Object>();
+            List<Object> failed = new ArrayList<Object>();
+            int added = 0;
+            for (int i = 0; i < docs.size(); i++) {
+                Object o = docs.get(i);
+                if (!(o instanceof Map)) {
+                    failed.add(batchFail(i, null, "条目不是对象"));
+                    continue;
+                }
+                Map<?, ?> d = (Map<?, ?>) o;
+                Object cv = d.get("content");
+                if (!(cv instanceof String) || ((String) cv).trim().isEmpty()) {
+                    failed.add(batchFail(i, d.get("id"), "缺 content 正文"));
+                    continue;
+                }
+                Object iv = d.get("id");
+                String id = iv instanceof String && !((String) iv).trim().isEmpty()
+                        ? ((String) iv).trim() : "U-" + Long.toString(System.currentTimeMillis(), 36) + "-" + i;
+                try {
+                    SemQuestTree.AddReport rep = t.tree.add(id, ((String) cv).trim());
+                    LinkedHashMap<String, Object> r = new LinkedHashMap<String, Object>();
+                    r.put("id", id);
+                    r.put("leaves", new ArrayList<Object>(rep.leaves));
+                    results.add(r);
+                    added++;
+                } catch (IOException e) {
+                    failed.add(batchFail(i, id, "落位失败: " + e.getMessage()));
+                }
+            }
+            persistTable(t);   // 批次结束统一落盘一次（含失败项之前的成功落位）
+            LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>(t.tree.metaMap());
+            out.put("total", docs.size());
+            out.put("added", added);
+            out.put("failed", failed);
+            out.put("results", results);
+            out.put("stats", t.tree.statsLine());
+            json(ex, 200, Json.write(out));
+        }
+
+        private LinkedHashMap<String, Object> batchFail(int index, Object id, String error) {
+            LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("index", index);
+            if (id instanceof String) m.put("id", id);
+            m.put("error", error);
+            return m;
+        }
+    }
+
     /** POST /api/t/&lt;id&gt;/quest {query} → 自然语言检索（走当前后端逐层判定）。 */
     private static final class QuestHandler extends BaseHandler {
 
@@ -984,13 +1227,50 @@ public final class SemQuestServer {
                 json(ex, 400, "{\"error\":" + Json.str("缺 query 字段") + "}");
                 return;
             }
+            String query = ((String) qv).trim();
+            // 节点名直取：查询与节点名完全一致 → 直接返回该节点子树内容（零模型调用，复用节点直取逻辑）
             try {
-                SemQuestTree.QuestReport rep = t.tree.quest(((String) qv).trim());
+                json(ex, 200, Json.write(nodeQuestMap(t.tree.nodeDocs(query))));
+                return;
+            } catch (IllegalArgumentException notNode) {
+                // 非节点名 → 走自然语言检索
+            }
+            try {
+                SemQuestTree.QuestReport rep = t.tree.quest(query);
                 json(ex, 200, Json.write(questMap(t.tree, rep)));
             } catch (IOException e) {
                 json(ex, 500, "{\"error\":" + Json.str("查询判定失败: " + e.getMessage()) + "}");
             }
         }
+    }
+
+    /**
+     * 节点名直取 → quest 形响应：matchedLeaves=子树叶名、ranked=子树落位内容
+     * （score=文档在子树内的落位叶数，多叶文档排前）、steps 空、fastPath=true。
+     */
+    private static Map<String, Object> nodeQuestMap(SemQuestTree.NodeDocs nd) {
+        HashSet<String> sub = new HashSet<String>(nd.leaves);
+        LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("query", nd.node);
+        out.put("fastPath", Boolean.TRUE);
+        out.put("matchedLeaves", new ArrayList<Object>(nd.leaves));
+        List<Object> ranked = new ArrayList<Object>();
+        for (SemQuestTree.NodeDoc d : nd.docs) {
+            LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("docId", d.id);
+            int inSub = 0;
+            for (String v : d.viaLeaves) {
+                if (sub.contains(v)) inSub++;
+            }
+            m.put("score", (double) inSub);
+            m.put("viaLeaves", d.viaLeaves);
+            m.put("content", d.content);
+            ranked.add(m);
+        }
+        out.put("ranked", ranked);
+        out.put("steps", new ArrayList<Object>());
+        out.put("stats", "节点直取 · " + nd.docs.size() + " 条 · 零模型调用");
+        return out;
     }
 
     // ── provider/model 辅助 ─────────────────────────────────────────
@@ -1123,6 +1403,7 @@ public final class SemQuestServer {
         }
         LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
         out.put("query", rep.query);
+        out.put("fastPath", rep.fast);   // true = 查询缓存直出（同款查询零模型返回，steps 为首次慢路轨迹复放）
         out.put("matchedLeaves", new ArrayList<Object>(rep.matchedLeaves));
         List<Object> ranked = new ArrayList<Object>();
         for (SemQuestTree.RankedDoc rd : rep.ranked) {

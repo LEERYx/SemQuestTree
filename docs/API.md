@@ -81,6 +81,14 @@
 
 **错误**：404 未知节点 / 缺 name。
 
+### GET /api/t/&lt;id&gt;/docs?node=X [免费]
+
+节点直取：指定节点（叶或内部节点）返回其子树内全部叶的落位内容，零模型调用。`limit` 可选（默认 500）、`offset` 可选（默认 0，翻页用），返回 docs[offset, offset+limit) 区间，未取完给 `truncated:true`。
+
+**出参**：`{node, leaves:[子树叶名 DFS 序（含兜底叶）], total(去重总数), docs:[{id, content, viaLeaves:[该文档全部落位叶名]}], truncated?}`——文档按叶 DFS 顺序去重（一 Doc 多叶只出一次）；兜底叶内容包含在内，viaLeaves 露出 `X_OTHER` 后缀可辨。
+
+**错误**：400 未知节点 / 缺 node / limit 非法；405 非 GET。
+
 ### POST /api/t/&lt;id&gt;/node [模型]
 
 增长节点 = 补层挂靠。**入参** `{parent, name, yes, no}`：
@@ -122,9 +130,17 @@
 
 **错误**：400 缺 content / JSON 非法；502 判定调用失败（超时、上游报错）。
 
+### POST /api/t/&lt;id&gt;/addBatch [模型]
+
+批量导入：`docs` 里每条独立落位，**单条失败不牵连整批**，全部结束后统一落盘一次。**入参** `{docs:[{id?, content}…]}`，单次上限 500 条（超出 400）；条目缺 `content` 记入 `failed` 继续。
+
+**出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves}], stats}`。
+
+**错误**：400 缺 docs / docs 空 / 超 500 条；单条判定失败进 `failed` 而非整体报错。
+
 ### POST /api/t/&lt;id&gt;/quest [模型]
 
-检索：自然语言查询沿判据树语义下行，命中叶上的文档按分排序返回。
+检索：自然语言查询沿判据树语义下行，命中叶上的文档按分排序返回。**节点名直取**：查询与节点名完全一致时不调模型，直接返回该节点子树全部叶的落位内容（复用节点直取；`fastPath:true`、`steps` 空数组、`matchedLeaves`=子树叶名、score=文档在子树内的落位叶数、stats 标「节点直取 · N 条 · 零模型调用」）。noul 检索与落位同条件镜像：某层零分支过门即命中该层兜底叶（`X_OTHER`），其存量文档照常返回；choice 单路径，途中胜出兜底项即无命中。查询结果缓存：同一条查询（原文完全一致）再次检索时直接返回上次结果（`fastPath:true`，零模型调用，`steps` 为首次慢路轨迹的原样复放），noul / choice 均生效。缓存按命中次数排序淘汰（调用最多的条目最不易淘汰，次数最少的先出局），容量 `questCacheSize` 在 semquest.properties 配置（默认 256，0=关闭），保存配置热载；**任何表变更（落位 / 加改删节点 / 调门控 / 提示词热载）即清空该表全部缓存**，缓存仅内存不落盘。
 
 **入参** `{query}`。
 
@@ -133,10 +149,11 @@
 | 字段 | 说明 |
 | --- | --- |
 | `query` | 原查询 |
-| `matchedLeaves` | 命中叶名（noul：过门分支；choice：单路径末叶） |
+| `fastPath` | true = 缓存直出（零模型调用，结果与首次判定一致） |
+| `matchedLeaves` | 命中叶名（noul：过门分支，某层零分支过门时含该层兜底叶；choice：单路径末叶） |
 | `ranked` | `[{docId, score, viaLeaves(该文档命中的叶), content}]`；score：noul=命中叶数，choice=路径各层胜出概率连乘 |
-| `steps` | 判定轨迹 |
-| `stats` | 本次会话累计账单文本行 |
+| `steps` | 判定轨迹（缓存直出时为首次慢路轨迹的复放） |
+| `stats` | 本次会话累计账单文本行（缓存直出零调用，不计入） |
 
 **错误**：400 缺 query；500 判定调用失败。
 
@@ -177,10 +194,10 @@
 ## 调用示例（curl）
 
 ```bash
-# 建表 → 加分支 → 落位 → 检索
+# 建表 → 加分支 → 批量导入 → 检索（同款查询第二次起缓存直出，零模型调用）
 curl -s http://localhost:8787/api/tables -d '{"name":"售后问题","mode":"noul","note":"演示"}'
 curl -s http://localhost:8787/api/t/<id>/node -d '{"parent":"ROOT","name":"退款","yes":"用户明确要求退钱退款"}'
-curl -s http://localhost:8787/api/t/<id>/add  -d '{"id":"Z-001","content":"我要退钱，不然投诉你们"}'
+curl -s http://localhost:8787/api/t/<id>/addBatch -d '{"docs":[{"id":"Z-001","content":"我要退钱，不然投诉你们"},{"content":"物流十天下单还没发货"}]}'
 curl -s http://localhost:8787/api/t/<id>/quest -d '{"query":"有没有人要求退款的"}'
 ```
 

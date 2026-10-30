@@ -98,6 +98,12 @@ public final class SemQuestClient {
                 "/api/t/" + enc(tableId) + "/leaf?name=" + enc(nodeName), null);
     }
 
+    /** GET /api/t/&lt;id&gt;/docs?node= → 节点直取（子树全部叶的落位内容，零模型调用；limit 可空，缺省 500）。 */
+    public Map<String, Object> nodeDocs(String tableId, String nodeName, Integer limit) throws IOException {
+        String q = "?node=" + enc(nodeName) + (limit == null ? "" : "&limit=" + limit);
+        return (Map<String, Object>) request("GET", "/api/t/" + enc(tableId) + "/docs" + q, null);
+    }
+
     /**
      * POST /api/t/&lt;id&gt;/node → 增长节点（会触发父节点存量逐条重判回填）。
      * noul 表 yes 必填、no 留空自动生成否定侧；choice 表 yes（选项描述）可空。
@@ -145,10 +151,25 @@ public final class SemQuestClient {
         return (Map<String, Object>) request("POST", "/api/t/" + enc(tableId) + "/add", sb.toString());
     }
 
-    /** POST /api/t/&lt;id&gt;/quest → 检索：命中叶 + 排序文档 + 判定轨迹。 */
+    /** POST /api/t/&lt;id&gt;/quest → 检索：命中叶 + 排序文档 + 判定轨迹（fastPath=true 表示同款查询缓存直出，零模型调用）。 */
     public Map<String, Object> quest(String tableId, String query) throws IOException {
         return (Map<String, Object>) request("POST", "/api/t/" + enc(tableId) + "/quest",
                 "{\"query\":" + Json.str(query) + "}");
+    }
+
+    /** POST /api/t/&lt;id&gt;/addBatch → 批量导入（≤500 条；单条失败不牵连整批）。返回 added/failed/results。 */
+    public Map<String, Object> addBatch(String tableId, String[][] docs) throws IOException {
+        StringBuilder sb = new StringBuilder("{\"docs\":[");
+        for (int i = 0; i < docs.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append('{');
+            if (docs[i][0] != null && !docs[i][0].trim().isEmpty()) {
+                sb.append("\"id\":").append(Json.str(docs[i][0])).append(',');
+            }
+            sb.append("\"content\":").append(Json.str(docs[i][1])).append('}');
+        }
+        sb.append("]}");
+        return (Map<String, Object>) request("POST", "/api/t/" + enc(tableId) + "/addBatch", sb.toString());
     }
 
     /** POST /api/t/&lt;id&gt;/gate → 调 noul 门控（只影响其后判定）。 */
@@ -295,26 +316,27 @@ public final class SemQuestClient {
         node(c, id, "Service", "contact", "wants to reach the passenger or support");
         System.out.println("已加分支: Fare/Cargo/Schedule/Service × 9 叶");
 
-        // 3. 落位 8 条（建树零判定；每条 2 层判定）
-        doc(c, id, "D-01", "Please add a surge to the Fare, that mountain detour took an hour.");
-        doc(c, id, "D-02", "This Fare is a pure lowball for 40 km, please raise it.");
-        doc(c, id, "D-03", "The ride is done but the Fare is still unpaid, I need that money.");
-        doc(c, id, "D-04", "Half of the Cargo arrived damaged, boxes were crushed.");
-        doc(c, id, "D-05", "No one helped with the Cargo loading, I carried it all alone.");
-        doc(c, id, "D-06", "Schedule slip: bridge is jammed, delivery will be late by 30 minutes.");
-        doc(c, id, "D-07", "Schedule change: the passenger wants to cancel the order.");
-        doc(c, id, "D-08", "Great Service experience: big praise to this passenger, friendly and smooth pickup.");
-        System.out.println("已落位 8 条语料");
+        // 3. 批量落位 8 条（一次 addBatch；每条 2 层判定，单条失败不牵连整批）
+        Map<String, Object> rep = c.addBatch(id, new String[][] {
+            {"D-01", "Please add a surge to the Fare, that mountain detour took an hour."},
+            {"D-02", "This Fare is a pure lowball for 40 km, please raise it."},
+            {"D-03", "The ride is done but the Fare is still unpaid, I need that money."},
+            {"D-04", "Half of the Cargo arrived damaged, boxes were crushed."},
+            {"D-05", "No one helped with the Cargo loading, I carried it all alone."},
+            {"D-06", "Schedule slip: bridge is jammed, delivery will be late by 30 minutes."},
+            {"D-07", "Schedule change: the passenger wants to cancel the order."},
+            {"D-08", "Great Service experience: big praise to this passenger, friendly and smooth pickup."},
+        });
+        System.out.println("批量落位: " + rep.get("added") + "/" + rep.get("total") + " 条");
+        for (Object o : (List<?>) rep.get("results")) {
+            Map<?, ?> r = (Map<?, ?>) o;
+            System.out.println("  " + r.get("id") + " → " + r.get("leaves"));
+        }
         return id;
     }
 
     private static void node(SemQuestClient c, String id, String parent, String name, String yes) throws IOException {
         Map<String, Object> rep = c.addNode(id, parent, name, yes, "");
         System.out.println("  +" + rep.get("node") + " (重判 " + rep.get("judged") + " 迁入 " + rep.get("moved") + ")");
-    }
-
-    private static void doc(SemQuestClient c, String id, String docId, String content) throws IOException {
-        Map<String, Object> rep = c.add(id, content, docId);
-        System.out.println("  " + docId + " → " + rep.get("leaves"));
     }
 }
