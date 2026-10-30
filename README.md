@@ -4,15 +4,21 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![JDK](https://img.shields.io/badge/JDK-8%2B-blue) ![Dependencies](https://img.shields.io/badge/third--party%20deps-0-brightgreen)
 
-**A multi-table semantic retriever driven by decision models: one table is one criteria tree.** No embeddings, no inverted index — domain knowledge is written as a tree of event-level atomic assertions, and a decision model (noul / choice question types) judges layer by layer along the tree: `add` descends a piece of content through the criteria into leaves, `quest` retrieves with a natural-language query.
+**Search without embeddings.** Your knowledge becomes a tree of criteria; a decision model walks content down the tree layer by layer — `add` files it into leaves, `quest` retrieves by natural language. Every hit carries its full decision path: which criteria fired, at what probability, at what token cost.
 
-noul mode is a multi-select branch — one piece of content can hit multiple branches at once; retrieval fans out concurrently and ranks by number of hit leaves. choice mode is a single-select branch — one question per layer, one winning option, descending along a single path. Ships with a visualization server: a start page managing all tables (pick the branch mode when creating), per-table tree expansion, node details on click, right-click to add/edit/delete nodes, hot-swappable backends/models, and a console for placement and retrieval.
+- **Explainable** — a readable decision path with P(yes) trace, not a black-box similarity score
+- **Multi-label** — one utterance lands in several leaves at once (noul mode); single-path descent also available (choice mode)
+- **Human-steerable** — criteria are configuration: edit them in the UI, per-subtree rule overrides, effective on save
+- **Zero infrastructure** — no embedding model, no vector DB, no indexer; JDK 8+ and it runs
+- **Visual** — built-in server: expand trees, click nodes, edit criteria, hot-swap models, query console
+
+Good fit: FAQ / policy lookup, ticket triage, intent routing — any small-to-medium index a human must read and control.
 
 ![demo](docs/demo-en.gif)
 
 ## What a table looks like
 
-One table = one criteria tree. This is the English demo table shown in the GIF — built through the HTTP API with a handful of POSTs (see [docs/API.md](docs/API.md)):
+One table = one criteria tree. The demo from the GIF, built with a handful of HTTP API POSTs:
 
 ```
 ROOT
@@ -32,15 +38,6 @@ Every node carries a yes criterion (an event-level atomic assertion); leaves hol
 
 Retrieval score = number of hit leaves; the GIF shows this third query returning two documents through two leaves, with the full per-layer probability trace.
 
-## Why not vector search
-
-- **Explainable paths**: every hit comes with an explicit decision path and P(yes) trace (which criteria fired, the probability at each layer, tokens spent) — not black-box similarity
-- **Editable and steerable by humans**: criteria are configuration; per-subtree rules (ruleAdd / ruleSearch) override global rules, and saved criteria take effect immediately
-- **Multi-label for free**: under the noul absolute gate one piece of content lands in multiple leaves — no top-k truncation
-- **Zero dependencies, zero infrastructure**: no embedding model, no vector DB, no indexer process — compiles with JDK 8+ and runs
-
-Good fit: FAQ / policy-paragraph lookup, ticket triage, intent routing, and small-to-medium knowledge indexes that a human must be able to read and control.
-
 ## Up and running in 60 seconds (no credentials)
 
 ```bash
@@ -50,45 +47,31 @@ javac -encoding UTF-8 -d target/classes $(find src/main/java -name "*.java")   #
 java -cp target/classes org.example.SemQuestServer
 ```
 
-Open http://localhost:8787 — with no model credentials configured the server automatically falls back to the **mock backend** (deterministic keyword matching; zero tokens, zero network). The built-in demo table 司机意图 (a Chinese driver-intent tree, 7 utterances) is migrated automatically from files shipped in the repo — open it, switch to the right-side 控制台 (console) → 检索 search, and try `找运费价格相关：要求涨价、讨要运费的话术` to see multi-leaf hits, ranked documents and the decision trace. The GIF above shows its English twin, the Driver Intents table from the example below — rebuild it with one command (`java -cp target/classes org.example.SemQuestClient seed`; free on the mock backend, fires ~19 real decisions on paid ones) or by hand through the [HTTP API](docs/API.md). To plug in real models see [Configuration](#configuration) (start by copying `semquest.properties.example`).
+- No credentials configured → the server falls back to the built-in **mock backend** (zero tokens, zero network). Open http://localhost:8787 — the demo table 司机意图 migrates automatically; open its 控制台 → 检索 and try `找运费价格相关：要求涨价、讨要运费的话术`
+- English demo table (the GIF's Driver Intents): `java -cp target/classes org.example.SemQuestClient seed`
+- Real models: copy `semquest.properties.example` → `semquest.properties`, see [Configuration](#configuration)
 
 ## Running the visualization server
 
-From the SemQuestTree directory, compile + start:
-
-```bash
-mkdir -p target/classes && javac -encoding UTF-8 -d target/classes $(find src/main/java -name "*.java") \
-     && java -cp target/classes org.example.SemQuestServer
-```
-
-Or start directly if already compiled:
-
-```bash
-java -cp target/classes org.example.SemQuestServer
-```
-
-Stop the server (kills every local SemQuestServer process):
+Compile + start is the command block above; stop everything with:
 
 ```bash
 pkill -f org.example.SemQuestServer
 ```
 
-Tip: if the upstream decision endpoints are region-blocked, append `-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890` (adjust to your local proxy port) to the `java` command. For common issues (credentials & quota, ports, compilation, retrieval behavior) see **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**.
+If upstream decision endpoints are region-blocked, append `-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890` (adjust the port) to the `java` command; more in **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**.
 
 At http://localhost:8787 :
 
-- The start page lists all tables (cards: name / mode / note / doc count). 新建表 (new table) takes a name + branch mode (noul multi-select / choice single-select — hover the ? for explanations) + note; the mode is fixed at creation. Card 改名 / 备注 renames a table and edits its note (same as the ✎ button inside a table; duplicates get a 400; persisted). Card 删表 deletes the whole tree and its data file
-- Inside a table only ROOT shows initially; left-click a node to expand one layer (one query per layer); 全部展开 pulls the whole tree at once
-- Click any node → the right panel shows its path, criteria and placed docs (internal nodes also list children and the subtree doc total; nothing shows until you click)
-- Right-click a node → 增加判断节点 / 增加选项: for noul fill in name / yes / no criteria (Chinese), for choice fill the option name + optional description. After creation the parent's existing docs are re-judged one by one and migrated into the new leaf
-- Right-click a node → 修改节点 / 修改选项: rename and edit criteria with zero model calls; renaming updates placement pointers, edits are persisted in the snapshot and replayed on restart
-- The header model bar (global, applies to all tables): pick a backend (jev / openrouter / 百炼 Bailian / mock), then a model list loads (for openrouter it is filtered live by the decisions modality — new official models appear automatically; on failure/timeout it falls back to 32 built-in candidates; a `*.models` manual list, when configured, is used as-is). `⚡` marks decision-endpoint models, `·免费` marks free models. Selecting one hot-swaps instantly (only the credential channel changes; no inference is fired)
-- The EN / 中文 button at the top right switches the UI language (fully translated; the choice is remembered in the browser)
-- The right-side 控制台 tab has two modes (Enter to run, Shift+Enter for a newline): 落位 add pastes one piece of content and places it into leaves (same ID replaces the old placement); pasting several lines at once places them as a batch (`addBatch` — per-item isolation, one failure doesn't stop the rest, 500 per batch); 检索 search takes a natural-language query and returns hit leaves, ranked documents (with text and via path), the decision trace and the token bill — repeating the exact same query returns the cached result instantly (marked ⚡, zero model calls), for both noul and choice tables
-- Right-click a node → 删除节点: after confirmation deletes the whole subtree (including fallback leaves at every level) and cleans up related placements; persistence and growth records are updated in sync (the root and fallback leaves cannot be deleted directly)
-- The top-right parameter box adapts to the table mode: noul tables show 门控 (the absolute gate, adjustable at runtime), choice tables show 采纳线 (the acceptance line — a win below it falls to the fallback); changes only affect subsequent decisions, never re-rank placed data, and are persisted per table
+- Start page: all tables as cards — 新建表 (name + branch mode noul / choice + note, fixed at creation), 改名 / 备注 / 删表
+- Left-click a node to expand one layer; 全部展开 pulls the whole tree; click a node → the right panel shows path, criteria and placed docs (internal nodes add the subtree's docs, 10 at a time)
+- Right-click → 增加判断节点 / 增加选项: creating a branch re-judges the parent's existing docs into it; 修改节点 edits name / criteria with zero model calls; 删除节点 removes the subtree and its placements (root and fallback leaves protected)
+- Header model bar (all tables): pick backend jev / openrouter / 百炼 / mock, then a model — selecting hot-swaps instantly; ⚡ = decision-endpoint models, ·免费 = free
+- 控制台 tab, two modes (Enter runs, Shift+Enter newlines): 落位 add places one line of content (paste several → batch), 检索 search returns hit leaves, ranked docs, decision trace and token bill; repeating the exact same query returns the cached result (⚡, zero model calls)
+- Top-right parameter box: 门控 (noul gate) / 采纳线 (choice acceptance line) — runtime-adjustable, persisted per table, never re-ranks placed data
+- EN / 中文 switches the UI language
 
-Each table is persisted at `tables/<id>.json` (structure, criteria, both gates, placements, growth and edit records); restarts read the snapshot with zero model calls. The legacy single-tree files (`driver-intent-schema.json` + `tree-data.json`) are migrated into the demo table 司机意图 on first start when `tables/` is empty. `--reseed` replays only demo tables (rebuild a clean tree from the schema + re-place Demo.DOCS — calls the model); non-demo tables are untouched; a fresh install starts with an empty table bar and zero model calls:
+Each table persists at `tables/<id>.json` (structure, criteria, gates, placements, growth / edit records); restart reads the snapshot with zero model calls. `--reseed` rebuilds only demo tables from the schema (calls the model):
 
 ```bash
 java -cp target/classes org.example.SemQuestServer --reseed
@@ -106,14 +89,12 @@ Prints add placement traces, quest hits and the token bill.
 
 ## HTTP API & Java client
 
-The visualization server is itself a full REST API — table management, tree editing, placement, retrieval and model hot-swapping all go over HTTP. See **[docs/API.md](docs/API.md)** for every endpoint's inputs, outputs and semantics. The repo ships a zero-dependency Java client, [`org.example.SemQuestClient`](src/main/java/org/example/SemQuestClient.java): copy it together with `Json.java` into your Java backend and you can call every endpoint; the decision-model credentials live only on the server side, so the client needs no configuration:
+The visualization server is itself a full REST API — every endpoint documented in **[docs/API.md](docs/API.md)**. A zero-dependency Java client ships in [`org.example.SemQuestClient`](src/main/java/org/example/SemQuestClient.java): copy it with `Json.java` into your backend and call any endpoint; credentials stay server-side:
 
 ```bash
-java -cp target/classes org.example.SemQuestClient                    # default http://localhost:8787
+java -cp target/classes org.example.SemQuestClient                    # demo: create table → branches → docs → retrieve → drop; ~6 real decision calls, switch to mock for zero cost
 java -cp target/classes org.example.SemQuestClient http://localhost:8790   # custom address
 ```
-
-`main()` runs a complete demo: create table → add branches → place docs → retrieve → adjust gate → drop the table (re-runnable; the demo table is deleted at the end). Note that add/quest fire real decision calls against the current backend (about 6 requests) — for a zero-cost demo switch the backend to mock first.
 
 ## Configuration
 
@@ -136,18 +117,18 @@ All configuration lives in `semquest.properties` (start by copying [`semquest.pr
 | `mock.model` | display id of the mock backend model, default keyword-match |
 | `jev.models` / `openrouter.models` / `bailian.models` | manual model lists (comma-separated; when set they take priority; empty = fetch live from upstream) |
 
-Config hot-reload: the server polls `semquest.properties` mtime every 2 s — **saving the file applies it immediately**: `noulGate` applies to all noul tables, `choiceGate` to all choice tables, `questCacheSize` and `prompt.*` to every table (a prompt hot-reload also clears every table's query cache; `prompt.rule.*` swaps only tables whose tree-level rule still equals the previously applied default text — customized rules are never touched); timeout, credentials, model lists and per-backend url / model all hot-reload (changed credentials rebuild the current backend with zero inference calls; the log prints a `[热载]` line). Items bound to deployment data need a restart: `server.port` / `server.tables` / `server.data` / `server.viz`, `schema`, and the initial `backend`.
+Hot reload: the server polls `semquest.properties` every 2 s — **saving the file applies it at once**: `noulGate` / `choiceGate` / `questCacheSize` / `prompt.*` (prompt changes also clear the query caches; `prompt.rule.*` swaps only tables still carrying the previous default text), plus timeout, credentials, per-backend url / model and model lists (changed credentials rebuild the backend, zero inference). Restart required: `server.*`, `schema`, initial `backend`.
 
 ## Conventions
 
-- All-Chinese, four layers deep: rules (ruleAdd / ruleSearch), inputs, options and true-false criteria are all Chinese; criteria are event-level atomic assertions; leave `no` empty to auto-generate the negation side by language (schema nodes may still carry their own `ruleAdd` / `ruleSearch` overriding subtree rules, inheriting the global one by default; an English-criteria backup of the tree lives in `driver-intent-schema.en.json`)
-- noul tables: each layer issues one batched noul decision over all real criteria (multi-label absolute gate); every branch with P(yes) ≥ gate descends, so one piece of content can land in multiple leaves; fallback leaves (`X_OTHER`) are excluded from decision requests — if no criterion passes the gate at a layer, the content falls to that layer's fallback; retrieval mirrors the same condition — a query passing zero branches at a layer hits that layer's fallback leaf (a hit node with data never returns empty); retrieval score = number of hit leaves
-- Query-result cache: repeating the exact same query (verbatim string) returns the cached result with zero model calls (marked ⚡, identical to the first run), for both noul and choice tables; entries are evicted LFU-style — the most-hit entries survive, the least-hit go first; capacity is `questCacheSize`, default 256 (0 = off), hot-reloaded on config save; any table change (placement / node add-edit-delete / gate change) clears that table's cache; the cache is memory-only and not persisted
-- choice tables: one choice decision per layer; options = child nodes (description doubles as criterion, defaulting to the option name), with the fallback option 以上都不符合 (none of the above) as an explicit choice in normalization; a win with confidence < choiceGate falls to the fallback; descent follows a single path; retrieval score = product of winning probabilities along the path — hitting a fallback or dropping below the acceptance line ends the search with no hit
-- Fallback grows with the layer: creating the first branch at a layer auto-generates that layer's fallback leaf (visible in the UI immediately; choice-table decision requests always include the fallback option); deleting all branches of a layer (back to leaf form) removes the empty fallback leaf with them (if the fallback still holds placements, deleting the last branch is refused)
-- Mock backend: deterministic pure keyword-substring matching (content contains the node name → P = 0.95; choice picks the longest matching option, otherwise the fallback); fully reproducible, for onboarding / demos / tests only — not real semantic judgment
-- The Chinese test corpus is in `corpus-zh-test.md` (20 utterances with expected-hit annotations); if upstream endpoints are region-blocked, start the server with proxy flags
-- respan-family models (free): state uses the `{input,output}` message protocol and only the noul question type is accepted (the jev-style three-part criteria dialect `instructions + criteria{true,false}`); choice tables on respan fail fast with a clear error — switch to a jev / elephant family model
+- All-Chinese, four layers deep: rules (ruleAdd / ruleSearch), inputs, options and true-false criteria; criteria are event-level atomic assertions; empty `no` auto-generates the negation side; subtrees may override the rules; English backup: `driver-intent-schema.en.json`
+- noul tables: one batched question per layer over all real criteria; every branch with P(yes) ≥ gate descends (multi-label); fallback leaves (`X_OTHER`) are excluded from decision requests — zero passes at a layer falls to that layer's fallback; retrieval mirrors the same condition (a hit node with data never returns empty); score = number of hit leaves
+- Query cache: the exact same query returns the cached result with zero model calls (⚡); LFU eviction; capacity `questCacheSize` (default 256, 0 = off); any table change clears it; memory-only
+- choice tables: one question per layer; options = children (description doubles as criterion, defaulting to the name) + the explicit fallback 以上都不符合; a win below choiceGate falls to the fallback; single path; score = product of path probabilities — fallback or below-line ends with no hit
+- Fallback grows with the layer: the first branch at a layer auto-creates its fallback leaf; deleting a layer's last branch removes an empty fallback (refused while it holds placements)
+- Mock backend: deterministic keyword substring match (content contains the node name → P = 0.95); for demos / tests only, not real judgment
+- Chinese test corpus: `corpus-zh-test.md` (20 utterances with expected-hit annotations)
+- respan-family models (free): state uses the `{input,output}` message protocol and only noul is accepted (jev-style three-part criteria dialect); choice tables fail fast with a clear error — switch to a jev / elephant family model
 
 ## License
 
