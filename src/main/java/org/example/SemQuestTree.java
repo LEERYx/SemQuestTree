@@ -61,6 +61,7 @@ public final class SemQuestTree {
      * criterion 在判定前包裹判据文本（落位侧恒等 {yes} 写死；检索侧默认包检索框架）；questQuery
      * 包裹检索请求原文（{query}=查询原文）——两侧框架配套，给判据框架里的「该查询」提供指代源，
      * 使「所有悲伤的话」这类泛查询能过机制描述型判据——框架落在模型真正读的字段里。
+     * 两对框架 noul 与 choice 检索共用（choice 的 content=questQuery 包裹、选项描述=criterion 检索框架）。
      * noul instructions 仅 jev / respan 方言下发；openrouter（非 respan）与百炼下发的是判据文本（含包裹），此模板不影响它们。
      */
     public static final class Prompts {
@@ -76,7 +77,7 @@ public final class SemQuestTree {
         public final String noulSearchInstructions;
         /** noul 判据包裹模板（{yes}=判据原文、{name}=分支名；落位侧恒等写死，这里只承载检索模板）。 */
         public final String noulSearchCriterion;
-        /** noul 检索请求包裹模板（{query}=查询原文）：给 criterion 检索框架里的「该查询」提供指代源。 */
+        /** 检索请求包裹模板（{query}=查询原文；noul 与 choice 检索共用）：给 criterion 检索框架里的「该查询」提供指代源。 */
         public final String noulSearchQuery;
         /** choice 根层问句。 */
         public final String choiceAddRoot;
@@ -114,13 +115,13 @@ public final class SemQuestTree {
             return tpl.replace("{name}", name);
         }
 
-        /** noul 判据文本：按任务侧别取包裹模板，{yes} 替换判据原文、{name} 替换分支名（落位侧恒等 {yes} 写死，检索侧包检索框架）。 */
+        /** 判据文本（noul 题目与 choice 选项共用）：按任务侧别取包裹模板，{yes} 替换判据原文、{name} 替换分支名（落位侧恒等 {yes} 写死，检索侧包检索框架）。 */
         public String criterion(Task task, String yes, String name) {
             String tpl = task == Task.ADD ? "{yes}" : noulSearchCriterion;
             return tpl.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
         }
 
-        /** noul 检索请求文本：包裹模板 {query} 替换查询原文（仅检索侧，add 内容原文直下）。 */
+        /** 检索请求文本：包裹模板 {query} 替换查询原文（仅检索侧，add 内容原文直下；noul 与 choice 共用）。 */
         public String questQuery(String query) {
             return noulSearchQuery.replace("{query}", query == null ? "" : query);
         }
@@ -498,7 +499,9 @@ public final class SemQuestTree {
             throws IOException {
         LinkedHashMap<String, String> criteria = new LinkedHashMap<String, String>();
         for (SemNode c : node.children) {
-            criteria.put(c.name, c.yes != null && !c.yes.trim().isEmpty() ? c.yes : c.name);
+            // 判据按任务侧别包裹（与 noul 共用 criterion 模板）：检索侧包检索框架给「该查询」落点，落位侧恒等原文
+            String yes = c.yes != null && !c.yes.trim().isEmpty() ? c.yes : c.name;
+            criteria.put(c.name, prompts.criterion(task, yes, c.name));
         }
         SemNode other = otherLeaf(node);
         criteria.put(other.name, prompts.choiceOtherOption);
@@ -556,7 +559,8 @@ public final class SemQuestTree {
         QuestReport rep = new QuestReport(query);
         LinkedHashSet<SemNode> matched = new LinkedHashSet<SemNode>();
         if (choiceMode) {
-            descendQuestChoice(root, query, matched, rep, ruleSearch, 1.0d);
+            // choice 检索同样先包查询角色框架（与 noul 共用 questQuery 模板）：缓存键/报告/节点直取均保持原始查询
+            descendQuestChoice(root, prompts.questQuery(query), matched, rep, ruleSearch, 1.0d);
         } else {
             // 检索请求先包角色框架再下发：给判据检索框架里的「该查询」提供指代源（缓存键/报告/节点直取均保持原始查询）
             descendQuest(root, prompts.questQuery(query), matched, rep.steps, ruleSearch);
