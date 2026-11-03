@@ -224,6 +224,11 @@
   .start-empty { color: #5b6472; text-align: center; margin-top: 12vh;
     font-size: 14px; line-height: 2.1; }
   .start-empty span { font-size: 12px; color: #454e5c; }
+  /* 节点延伸进度条（后台串行拆细，水位/手动双触发共用） */
+  #extendBar { display: none; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid #232c3a; background: #141a24; }
+  .ext-track { flex: 0 0 220px; height: 6px; background: #232c3a; border-radius: 3px; overflow: hidden; }
+  .ext-fill { height: 100%; width: 0%; background: #2dd4a7; border-radius: 3px; transition: width .4s ease; }
+  .ext-txt { font-size: 12px; color: #8b98a9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -286,8 +291,12 @@
     </div>
   </section>
   <section id="treePanel" style="display:none">
+    <div id="extendBar">
+      <div class="ext-track"><div class="ext-fill" id="extendFill"></div></div>
+      <span class="ext-txt" id="extendTxt"></span>
+    </div>
     <div class="panel-head">
-      <span class="hint" data-i18n="tree.hint">左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删节点</span>
+      <span class="hint" data-i18n="tree.hint">左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删 / 延伸节点</span>
       <button class="btn" id="expandAll" data-i18n="tree.expandAll">全部展开</button>
     </div>
     <div id="tree"><div class="loading" data-i18n="tree.loading">加载中…</div></div>
@@ -350,7 +359,16 @@
       'modeDesc.choice': '单选：每层一个问题只挑一个胜出选项，沿单路径逐层下行；置信度低于采纳线落兜底（判据 = 选项）。',
       'card.noNote': '（无备注）', 'card.docs': '落位 {n} 条', 'card.edit': '改名 / 备注', 'card.del': '删表',
       'start.empty': '还没有表<br><span>用上方表单新建一张：命名 + 选分支方式（noul 多选 / choice 单选）</span>',
-      'tree.hint': '左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删节点',
+      'tree.hint': '左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删 / 延伸节点',
+      'menu.extend': '🪴 延伸拆细（生成子类 · 后台执行）',
+      'extend.running': '正在延伸「{node}」第 {round}/{max} 轮',
+      'extend.done': '「{node}」延伸完成：新枝 {kept} · 迁入 {moved} 条',
+      'extend.gen': ' · 生成 {gen} tok',
+      'extend.rolled': ' · 回滚 {n} 枝',
+      'extend.error': '延伸「{node}」失败：',
+      'toast.extendStarted': '已开始延伸「{node}」— 后台执行，可继续其他操作',
+      'toast.extendRunning': '「{node}」已在延伸中',
+      'toast.extendFail': '触发延伸失败',
       'tree.expandAll': '全部展开', 'tree.loading': '加载中…',
       'tab.detail': '节点详情', 'tab.quest': '控制台',
       'detail.empty': '点击左侧任意节点<br>展示该节点的路径、判据与落位数据（内部节点含子节点列表）<br><span>未点击不显示任何内容</span>',
@@ -376,6 +394,9 @@
       'q.phSearch': '输入自然语言检索语句',
       'q.emptyAdd': '请输入内容正文', 'q.emptySearch': '请输入检索语句',
       'q.loadingAdd': '逐层判定落位中…', 'q.loadingQuest': '逐层判定中…',
+      'q.importing': '批量导入中 {done}/{total} · 第 {i}/{n} 片',
+      'q.importGrow': '{parent} 下长出新枝「{name}」，本条已收编',
+      'q.importGrew': '批量导入完成：本次生长 {n} 个新枝',
       'add.done': '落位完成 · {id}',
       'add.noLeafNoul': '（无叶名——异常，正常应至少落兜底叶）',
       'add.noLeafChoice': '（无叶名——异常，正常应至少落兜底选项）',
@@ -470,7 +491,16 @@
       'modeDesc.choice': 'Single-path: one question per level picks a single winning option and descends only that path; below the accept line it falls back (criteria = option).',
       'card.noNote': '(no note)', 'card.docs': '{n} docs placed', 'card.edit': 'Rename / note', 'card.del': 'Delete',
       'start.empty': 'No tables yet<br><span>Create one with the form above: name + branching mode (noul multi-label / choice single-path)</span>',
-      'tree.hint': 'Click a node for details (internal nodes also expand/collapse) · right-click to add / edit / delete',
+      'tree.hint': 'Click a node for details (internal nodes also expand/collapse) · right-click to add / edit / delete / extend',
+      'menu.extend': '🪴 Extend (spawn sub-classes, background)',
+      'extend.running': 'Extending "{node}" round {round}/{max}',
+      'extend.done': '"{node}" extended: {kept} branches · {moved} docs moved',
+      'extend.gen': ' · {gen} gen tokens',
+      'extend.rolled': ' · {n} rolled back',
+      'extend.error': 'Extend "{node}" failed: ',
+      'toast.extendStarted': 'Extending "{node}" in background — you can keep working',
+      'toast.extendRunning': '"{node}" is already extending',
+      'toast.extendFail': 'Failed to trigger extend',
       'tree.expandAll': 'Expand all', 'tree.loading': 'Loading…',
       'tab.detail': 'Node detail', 'tab.quest': 'Console',
       'detail.empty': 'Click any node on the left<br>to see its path, criteria and placed docs (internal nodes list children)<br><span>Nothing shows until you click</span>',
@@ -496,6 +526,9 @@
       'q.phSearch': 'Type a natural-language query',
       'q.emptyAdd': 'Type the content first', 'q.emptySearch': 'Type a query first',
       'q.loadingAdd': 'Descending & placing…', 'q.loadingQuest': 'Descending…',
+      'q.importing': 'Importing {done}/{total} · chunk {i}/{n}',
+      'q.importGrow': 'New branch "{name}" grown under {parent} — doc adopted',
+      'q.importGrew': 'Import finished: {n} new branches grown',
       'add.done': 'Placed · {id}',
       'add.noLeafNoul': '(no leaf name — abnormal; should at least hit a fallback leaf)',
       'add.noLeafChoice': '(no leaf name — abnormal; should at least hit the fallback option)',
@@ -803,6 +836,7 @@
       $('#detailEmpty').style.display = '';
       $('#detail').style.display = 'none';
       showTab('detail');
+      if (!extendTimer) pollExtend();   // 进表即接上延伸进度（水位自动触发的任务也能看到进度条）
     } catch (e) {
       toast(T('toast.openFail') + ': ' + e, true);
       location.hash = '#/';
@@ -989,6 +1023,70 @@
 
   // ── 右键菜单 + 增加判断节点 ────────────────────────────────────
 
+  // ── 节点延伸（深度生长）：右键手动触发 + 进度条轮询（后台串行拆细，不阻塞操作）──
+  let extendTimer = null;
+  let extendHideTimer = null;
+
+  async function triggerExtend(nodeName) {
+    try {
+      const st = await apiSend(T0() + '/extend', 'POST', { node: nodeName });
+      toast(st.alreadyRunning ? Tf('toast.extendRunning', { node: st.node }) : Tf('toast.extendStarted', { node: nodeName }));
+      renderExtendBar(st);
+      if (!extendTimer) pollExtend();
+    } catch (e) {
+      toast(T('toast.extendFail') + ': ' + e, true);
+    }
+  }
+
+  async function pollExtend() {
+    if (state.mode !== 'noul' || !state.tid || $('#treePanel').style.display === 'none') {
+      extendTimer = null;
+      hideExtendBar();
+      return;
+    }
+    try {
+      const st = await api(T0() + '/extend');
+      renderExtendBar(st);
+      if (st.phase === 'running') { extendTimer = setTimeout(pollExtend, 1000); return; }
+    } catch (e) { /* 表已删除等：静默收 */ }
+    extendTimer = null;
+  }
+
+  function hideExtendBar() { const b = $('#extendBar'); if (b) b.style.display = 'none'; }
+
+  function renderExtendBar(st) {
+    const bar = $('#extendBar');
+    if (!bar) return;
+    if (st.phase === 'idle') { bar.style.display = 'none'; return; }
+    bar.style.display = 'flex';
+    const pct = st.totalDocs > 0 ? Math.min(100, Math.round(st.rejudged / st.totalDocs * 100)) : (st.phase === 'done' ? 100 : 0);
+    let txt;
+    if (st.phase === 'running') {
+      txt = Tf('extend.running', { node: st.node, round: st.round, max: st.maxRounds }) + (st.current ? ' · ' + st.current : '');
+    } else if (st.phase === 'done') {
+      txt = Tf('extend.done', { node: st.node, kept: st.keptBranches, moved: st.movedDocs })
+          + (st.rolledBack ? Tf('extend.rolled', { n: st.rolledBack }) : '')
+          + (st.genIn + st.genOut > 0 ? Tf('extend.gen', { gen: st.genIn + st.genOut }) : '')
+          + (st.result ? ' · ' + st.result : '');
+    } else {
+      txt = Tf('extend.error', { node: st.node || '' }) + ' ' + (st.result || '');
+    }
+    $('#extendTxt').textContent = txt;
+    $('#extendFill').style.width = pct + '%';
+    if (st.phase !== 'running') {
+      refreshAfterExtend(st.node);   // 新枝入树/存量迁移：刷新受影响子树
+      clearTimeout(extendHideTimer);
+      extendHideTimer = setTimeout(hideExtendBar, 8000);
+    } else {
+      clearTimeout(extendHideTimer);
+    }
+  }
+
+  async function refreshAfterExtend(nodeName) {
+    if (!nodeName) return;
+    try { await refreshNode(nodeName); } catch (e) { /* 行不在视图内：忽略 */ }
+  }
+
   let menuEl = null;
   function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
   document.addEventListener('click', closeMenu);
@@ -1012,6 +1110,12 @@
       item.textContent = T(state.mode === 'choice' ? 'menu.addChoice' : 'menu.addNoul');
       item.onclick = () => { closeMenu(); openDialog(node); };
       menuEl.appendChild(item);
+      if (state.mode !== 'choice' && node.leaf && node.docCount > 0) {   // 延伸拆细：仅 noul 叶且有存量
+        const ext = document.createElement('div');
+        ext.textContent = T('menu.extend');
+        ext.onclick = () => { closeMenu(); triggerExtend(node.name); };
+        menuEl.appendChild(ext);
+      }
       if (row.dataset.depth !== '0') {        // 根节点不可改不可删
         editItem();
         const del = document.createElement('div');
@@ -1537,15 +1641,70 @@
           if (idv) doc.id = idv;
           docs = [doc];
         }
-        const d = await apiSend(T0() + '/addBatch', 'POST', { docs });
-        if (docs.length === 1 && !(d.failed || []).length) renderAdd(d);
-        else renderAddBatch(d);
+        // 批量大条数分片导入：每片 CHUNK 条顺序提交，进度条实时推进、生长事件当场挂出
+        const CHUNK = 5;
+        if (addSub === 'batch' && docs.length > CHUNK) {
+          await importChunked(docs, CHUNK, out);
+        } else {
+          const d = await apiSend(T0() + '/addBatch', 'POST', { docs });
+          if (docs.length === 1 && !(d.failed || []).length) renderAdd(d);
+          else renderAddBatch(d);
+        }
       } else {
         renderQuest(await apiSend(T0() + '/quest', 'POST', { query: text }));
       }
     } catch (e) {
       out.innerHTML = '<div class="error">' + esc(e) + '</div>';
     }
+  }
+
+  // 批量导入进度条：与延伸进度条同一套视觉（ext-track/ext-fill），按分片推进
+  function importBarHtml(done, total, ci, cn) {
+    const pct = total ? Math.round(done / total * 100) : 0;
+    return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
+        '<div class="ext-track"><div class="ext-fill" style="width:' + pct + '%"></div></div>' +
+        '<span class="ext-txt">' + esc(Tf('q.importing', { done: done, total: total, i: ci, n: cn })) + '</span></div>';
+  }
+
+  // 分片批量导入：docs 切成 chunk 条一片顺序提交，进度实时推进、落兜底生长的新枝当场挂出，
+  // 树侧叶计数/新枝每片即时刷新——导入过程中就能看见树在长。
+  async function importChunked(docs, chunk, out) {
+    const grows = [];
+    let evHtml = '';
+    out.innerHTML = importBarHtml(0, docs.length, 0, Math.ceil(docs.length / chunk)) + evHtml;
+    const agg = { total: 0, added: 0, failed: [], results: [], stats: null };
+    for (let i = 0; i < docs.length; i += chunk) {
+      const part = docs.slice(i, i + chunk);
+      try {
+        const d = await apiSend(T0() + '/addBatch', 'POST', { docs: part });
+        agg.total += d.total || part.length;
+        agg.added += d.added || 0;
+        agg.failed.push(...(d.failed || []));
+        agg.results.push(...(d.results || []));
+        agg.stats = d.stats || agg.stats;
+        const hitLeaves = new Set();
+        const grownParents = new Set();
+        for (const r of (d.results || [])) {
+          (r.leaves || []).forEach(l => hitLeaves.add(l));
+          if (r.growthStep && r.growthStep.kept > 0) {
+            grownParents.add(r.growthStep.parent);
+            const nb = (r.growthStep.branches || [{}])[0];
+            grows.push(nb.name);
+            evHtml += '<div class="q-step" style="color:#2dd4a7">🌿 ' +
+                esc(Tf('q.importGrow', { name: nb.name || '', parent: r.growthStep.parent })) + '</div>';
+          }
+        }
+        refreshLeafRows(hitLeaves);
+        for (const p of grownParents) refreshNode(p).catch(() => {});
+      } catch (e) {
+        out.innerHTML = '<div class="error">' + esc(e) + '</div>' + evHtml;
+        return;
+      }
+      out.innerHTML = importBarHtml(Math.min(i + chunk, docs.length), docs.length,
+          Math.ceil((i + chunk) / chunk), Math.ceil(docs.length / chunk)) + evHtml;
+    }
+    renderAddBatch(agg);   // 收尾：与一次性批量同版式汇总（含每条落位叶与生长卡片）
+    if (grows.length) toast(Tf('q.importGrew', { n: grows.length }));
   }
   $('#q-go').onclick = runConsole;
   $('#q-input').addEventListener('keydown', e => {

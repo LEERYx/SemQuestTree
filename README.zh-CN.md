@@ -11,11 +11,13 @@
 - **人可管**——判据即配置：界面直接改，子树规则可覆盖，保存即生效
 - **零基建**——不要向量模型、不要向量库、不要索引进程；JDK 8+ 跑起来就是
 - **可视化**——内置服务：展开树、点节点、改判据、换模型、查询控制台
-- **会生长（默认关）**——quest 落兜底即树说「不知道」：免费生成模型当场写新分支判据，触发查询重跑命中才保留（否则回滚），当场命中；`growth.enabled` 开启
+- **会生长（默认关）**——quest 落兜底即树说「不知道」：生成模型（本次实测用 qwen/qwen3.7-flash，判定用 microsoft/microsoft-decision-1）当场写新分支判据，触发查询重跑命中才保留（否则回滚），当场命中；`growth.enabled` 开启
 
 适合：FAQ / 政策条款定位、工单分流、意图路由——一切要人看得懂管得住的小中规模索引。
 
-![demo](docs/demo.gif)
+![自生长实测：microsoft-decision-1 逐层判定 · qwen3.7-flash 生成判据——50 条语料批量导入，树自动长到第 4 层](docs/demo-selfgrowth.gif)
+
+> 上图完整实录（建树过程 / 自生长 / 容量与时延 / 成本）：[docs/SELF-GROWING.zh-CN.md](docs/SELF-GROWING.zh-CN.md)
 
 ## 60 秒开箱（零凭据）
 
@@ -27,7 +29,7 @@ java -cp target/classes org.example.SemQuestServer
 ```
 
 - 未配任何模型凭据 → 自动落到内置 **mock 后端**（零 token、零网络）。打开 http://localhost:8787 ——demo 表「司机意图」随仓库自动迁移，进表点右侧「控制台」→「检索」，输入 `找运费价格相关：要求涨价、讨要运费的话术`
-- 英文示例表（GIF 里的 Driver Intents）：`java -cp target/classes org.example.SemQuestClient seed`
+- 英文示例表（Driver Intents）：`java -cp target/classes org.example.SemQuestClient seed`
 - 接真实模型：复制 `semquest.properties.example` → `semquest.properties`，见[配置](#配置)
 
 ## 启动可视化服务

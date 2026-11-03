@@ -11,15 +11,17 @@
 - **Human-steerable** — criteria are configuration: edit them in the UI, per-subtree rule overrides, effective on save
 - **Zero infrastructure** — no embedding model, no vector DB, no indexer; JDK 8+ and it runs
 - **Visual** — built-in server: expand trees, click nodes, edit criteria, hot-swap models, query console
-- **Self-growing (opt-in)** — a quest that lands on fallbacks means the tree says "don't know": a free generation model writes new branch criteria on the spot, each kept only if the triggering query now hits it (rolled back otherwise) — the hit happens within the same request; switch on with `growth.enabled`
+- **Self-growing (opt-in)** — a quest that lands on fallbacks means the tree says "don't know": the generation model (qwen/qwen3.7-flash in our runs; decision calls on microsoft/microsoft-decision-1) writes new branch criteria on the spot, each kept only if the triggering query now hits it (rolled back otherwise) — the hit happens within the same request; switch on with `growth.enabled`
 
 Good fit: FAQ / policy lookup, ticket triage, intent routing — any small-to-medium index a human must read and control.
 
-![demo](docs/demo-en.gif)
+![Self-growth as measured: microsoft-decision-1 for decisions, qwen3.7-flash for criteria generation — 50 docs batch-imported, the tree grows to depth 4 on its own](docs/demo-selfgrowth.gif)
+
+> Full write-up of the run above (tree building / self-growth / capacity & latency / cost): [docs/SELF-GROWING.zh-CN.md](docs/SELF-GROWING.zh-CN.md)
 
 ## What a table looks like
 
-One table = one criteria tree. The demo from the GIF, built with a handful of HTTP API POSTs:
+One table = one criteria tree. A demo table, built with a handful of HTTP API POSTs:
 
 ```
 ROOT
@@ -37,7 +39,7 @@ Every node carries a yes criterion (an event-level atomic assertion); leaves hol
 | `The ride is done but the Fare is still unpaid, I need that money.` | Fare → unpaid | unpaid |
 | `driver says the Fare is unpaid and the Cargo arrived damaged` *(query)* | Fare→unpaid ∥ Cargo→damaged | unpaid + damaged |
 
-Retrieval score = number of hit leaves; the GIF shows this third query returning two documents through two leaves, with the full per-layer probability trace.
+Retrieval score = number of hit leaves; every hit ships with the full per-layer probability trace.
 
 ## Up and running in 60 seconds (no credentials)
 
@@ -49,7 +51,7 @@ java -cp target/classes org.example.SemQuestServer
 ```
 
 - No credentials configured → the server falls back to the built-in **mock backend** (zero tokens, zero network). Open http://localhost:8787 — the demo table 司机意图 migrates automatically; open its 控制台 → 检索 and try `找运费价格相关：要求涨价、讨要运费的话术`
-- English demo table (the GIF's Driver Intents): `java -cp target/classes org.example.SemQuestClient seed`
+- English demo table (Driver Intents): `java -cp target/classes org.example.SemQuestClient seed`
 - Real models: copy `semquest.properties.example` → `semquest.properties`, see [Configuration](#configuration)
 
 ## Running the visualization server

@@ -138,6 +138,8 @@
 
 **数据驱动生长**（`growth.enabled=true` 时）：本条落位全为兜底（树里没有能承接这条内容的类别，含空树根叶）→ 服务端按**本条内容**调生成模型提出 ≤`growth.maxNew` 个新分支逐个验收入树；任一收编即响应 `leaves` 换为新枝、记 grown（auto 标记，重启零模型回放）并挂 `growthStep`；全部未收编则分支当场回滚、本条留在原兜底叶数据不丢。生成模型经 `growth.model` 配置、提示词经 `growth.prompt` 配置（均可热载，提示词空白回内置模板）；思考型模型可用 `growth.thinking`（none/low/medium/high）+ `growth.maxTokens` 压住输出量——该次生成占 add 总耗时九成以上，实测 qwen3.7-flash 由 38.6s 降到 5.7s（生成 3066 → 122 token）。失败原因（该层分支已满 / 缺 openrouter 凭据 / 生成调用失败）也写进 `growthStep.failed`。
 
+**节点延伸（深度生长）**：落位叶存量超过水位（`growth.splitAt × growth.splitFactor`，默认 255×0.7=178）时自动提交后台延伸任务——把拥挤叶串行拆细出下一层（不阻塞本请求），详见下方 `/extend`。
+
 **出参**：`meta` + `{id, leaves(生长收编后为新枝), steps, growthStep?, stats}`。`growthStep`：`{parent, genTokens, genInTokens, genOutTokens, genMs, kept(收编保留数), branches:[{name, yes, prob(验收 P)}], failedBranches(已回滚分支), failed(放弃原因)}`。
 
 **错误**：400 缺 content / JSON 非法；502 判定调用失败（超时、上游报错）。
@@ -149,6 +151,16 @@
 **出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves, steps, growthStep?}], stats}`——每条独立触发数据驱动生长（同 add，卡片挂在该条行下）。
 
 **错误**：400 缺 docs / docs 空 / 超 500 条；单条判定失败进 `failed` 而非整体报错。
+
+### GET /api/t/&lt;id&gt;/extend [免费]
+
+节点延伸状态（viz 进度条轮询）。**出参** `{tableId, phase(idle/running/done/error), node, round, maxRounds, rejudged, totalDocs(进度=rejudged/totalDocs，全程累计口径，多轮单调不回跳), keptBranches, movedDocs, rolledBack, genIn(累计生成 tokens in), genOut(累计生成 tokens out), current(当前动作文案), result(结束原因/错误), startedAt, finishedAt}`。仅内存态不落盘，重启归 idle。
+
+### POST /api/t/&lt;id&gt;/extend [模型]
+
+手动触发节点延伸：`{node}` 对该节点后台串行拆细——**手动触发即强制拆细，不受水位限制**（水位仅作用于自动触发）；每轮「快照 → 生成 1 个更细子类 （层级无关模板 `growth.extend.prompt`，`{parentYes}` 约束子类比父类细一层）→ 入 树 → 该节点存量逐条重判过门迁入 → 基于最新树状态下一轮」，直至存量不足 2 条 / 生成器 返回空（无更细区分）/ 达 `growth.extend.maxNew`；轮内零收编整枝回滚（undoGrow 零模型）。全程后台单工执行（模型调用不持表锁），add/quest 照常并行；`growth.enabled` 或 `growth.extend` 关闭时任务即停。仅 noul 表（choice 表 400）；对兜底叶触发 400（请对其父节点触发）；节点无存量 400。提示词层级无关：不写死「第几层」，2、3、4…层同一模板递 复用。
+
+**出参**：202 `状态快照 + alreadyRunning:false`（已受理）；200 `alreadyRunning:true`（已在跑，幂等）。**错误**：400 缺 node / 节点不存在 / 兜底叶 / 节点无存量 / choice 表。
 
 ### POST /api/t/&lt;id&gt;/quest [模型]
 

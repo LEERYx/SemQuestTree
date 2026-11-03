@@ -682,8 +682,8 @@ public final class SemQuestTree {
         }
     }
 
-    /** 任何表变更（add / 增长 / 修改 / 删除 / 双门控调整）后缓存结果不再可信，整池清空。 */
-    private void bustQuestCache() {
+    /** 任何表变更（add / 增长 / 修改 / 删除 / 双门控调整 / 延伸落位）后缓存结果不再可信，整池清空。 */
+    public void bustQuestCache() {
         if (!questCache.isEmpty()) {
             questCache.clear();
             questCacheHits.clear();
@@ -1052,16 +1052,7 @@ public final class SemQuestTree {
                 : (no != null && !no.trim().isEmpty() ? no.trim() : NoulSpec.autoNo(yesT));
         SemNode p = find(root, parent);
         if (p == null) throw new IllegalArgumentException("父节点不存在: " + parent);
-        String effRule = ruleAdd;   // 父所在子树若有规则覆盖（如中文子树），重判沿用它
-        List<SemNode> pathNodes = new ArrayList<SemNode>();
-        if (findNodePath(root, parent, pathNodes)) {
-            for (int i = pathNodes.size() - 1; i >= 0; i--) {
-                if (pathNodes.get(i).ruleAdd != null) {
-                    effRule = pathNodes.get(i).ruleAdd;
-                    break;
-                }
-            }
-        }
+        String effRule = effectiveRuleOf(p);   // 父所在子树若有规则覆盖（如中文子树），重判沿用它
 
         boolean differentiate = p.isLeaf();
         List<Doc> affected = new ArrayList<Doc>(differentiate ? p.docs
@@ -1177,16 +1168,126 @@ public final class SemQuestTree {
         if (n.otherLeaf != null) stripFromSubtree(n.otherLeaf, d);
     }
 
-    /** 单题重判（增长回填用），计入账单。规则取父子树的有效规则（有覆盖用覆盖，无则全局）。 */
-    private double judgeOne(String content, String name, String yes, String no, String rule) throws IOException {
+    // ── 节点延伸（深度生长）：拥挤叶由 Server 编排在表锁外串行拆细，任意层可递复用 ──
+
+    /** 延伸准备快照（表锁内调用）：延伸串行闭环每一轮的输入——目标含义、现有子分支、存量样本与待重判清单。 */
+    public static final class ExtendPlan {
+        public final String node;              // 延伸目标节点名
+        public final String parentYes;         // 目标节点判据（子类的公共上限，生成提示词 {parentYes}）
+        public final int totalDocs;            // 待整理存量条数
+        public final List<String[]> siblings;  // 现有子分支 {name, yes}（互斥基准，可能为空）
+        public final List<String> samples;     // 存量均匀抽样（内容概述，生成器输入）
+        public final List<String[]> affected;  // 全量待重判存量 {id, content}
+        public final String rule;              // 有效 add 规则（重判沿用）
+
+        ExtendPlan(String node, String parentYes, int totalDocs, List<String[]> siblings,
+                   List<String> samples, List<String[]> affected, String rule) {
+            this.node = node;
+            this.parentYes = parentYes;
+            this.totalDocs = totalDocs;
+            this.siblings = siblings;
+            this.samples = samples;
+            this.affected = affected;
+            this.rule = rule;
+        }
+    }
+
+    /**
+     * 延伸目标校验 + 快照。目标=真实叶（拆直挂存量）或内部节点（拆其兜底叶存量），口径与 growNode
+     * 受影响存量一致；兜底叶本身不可延伸（对其父节点触发）。choice 模式不支持：选项整题重选依赖
+     * 树结构，锁外化代价高，手动与水位触发均拒绝。节点不存在抛 IllegalArgumentException。
+     */
+    public ExtendPlan planExtend(String nodeName, int sampleLimit) {
+        SemNode n = nodeName == null ? null : find(root, nodeName.trim());
+        if (n == null) throw new IllegalArgumentException("节点不存在: " + nodeName);
+        if (choiceMode) throw new IllegalStateException("choice 表不支持延伸（仅 noul 多标签树）");
+        if (n.other) throw new IllegalArgumentException("兜底叶不可直接延伸，请对其父节点触发");
+        List<Doc> src = n.isLeaf() ? n.docs : (n.otherLeaf != null ? n.otherLeaf.docs : new ArrayList<Doc>());
+        List<String[]> affected = new ArrayList<String[]>();
+        for (Doc d : src) affected.add(new String[]{d.id, d.content});
+        List<String> samples = new ArrayList<String>();
+        if (!affected.isEmpty()) {   // 均匀步长抽样：整体代表性优于只取前 N 条
+            int limit = Math.min(Math.max(sampleLimit, 1), affected.size());
+            double step = (double) affected.size() / limit;
+            for (int i = 0; i < limit; i++) samples.add(affected.get((int) (i * step))[1]);
+        }
+        List<String[]> siblings = new ArrayList<String[]>();
+        for (SemNode c : n.children) {
+            siblings.add(new String[]{c.name, c.yes == null || c.yes.trim().isEmpty() ? c.name : c.yes});
+        }
+        return new ExtendPlan(n.name, n.yes == null ? "" : n.yes, affected.size(),
+                siblings, samples, affected, effectiveRuleOf(n));
+    }
+
+    /** 延伸口径的存量条数（真实叶直挂数 / 内部节点兜底叶数）；非法目标（不存在/兜底叶/choice 表）返回 -1。水位触发检查用。 */
+    public int extendDocCount(String nodeName) {
+        if (choiceMode) return -1;
+        SemNode n = nodeName == null ? null : find(root, nodeName.trim());
+        if (n == null || n.other) return -1;
+        return n.isLeaf() ? n.docs.size() : (n.otherLeaf != null ? n.otherLeaf.docs.size() : 0);
+    }
+
+    /**
+     * 延伸逐条落位（表锁内短临界区调用）：一条存量按新子枝判定结果移动——P≥门从原位（真实叶或
+     * 父层兜底叶）迁入新枝返回 true；不过门从真实叶落进兜底叶（与 growNode 口径一致）、已在兜底
+     * 原地不动返回 false。doc 已被并发增删或节点缺失返回 false（留待下一轮快照自然收正）。
+     */
+    public boolean moveJudged(String nodeName, String docId, String targetName, double prob) {
+        SemNode p = find(root, nodeName);
+        SemNode t = p == null ? null : find(root, targetName);
+        if (p == null || t == null) return false;
+        Doc d = docIndex.get(docId);
+        if (d == null) return false;
+        boolean fromLeaf = p.docs.contains(d);
+        if (!fromLeaf && (p.otherLeaf == null || !p.otherLeaf.docs.contains(d))) return false;
+        if (prob >= gate) {
+            if (fromLeaf) {
+                p.docs.remove(d);
+                d.leaves.remove(p.name);
+            } else {
+                p.otherLeaf.docs.remove(d);
+                d.leaves.remove(p.otherLeaf.name);
+            }
+            t.docs.add(d);
+            d.leaves.add(t.name);
+            return true;
+        }
+        if (fromLeaf) {
+            p.docs.remove(d);
+            d.leaves.remove(p.name);
+            SemNode o = otherLeaf(p);
+            o.docs.add(d);
+            d.leaves.add(o.name);
+        }
+        return false;
+    }
+
+    /** 父子树有效 add 规则（有覆盖用覆盖，无则全局）——growNode 与 planExtend 共用。 */
+    private String effectiveRuleOf(SemNode n) {
+        List<SemNode> pathNodes = new ArrayList<SemNode>();
+        if (findNodePath(root, n.name, pathNodes)) {
+            for (int i = pathNodes.size() - 1; i >= 0; i--) {
+                if (pathNodes.get(i).ruleAdd != null) return pathNodes.get(i).ruleAdd;
+            }
+        }
+        return ruleAdd;
+    }
+
+    /**
+     * 单题重判（增长回填与延伸编排用），计入账单。规则取父子树的有效规则（有覆盖用覆盖，无则全局）。
+     * 纯参数化不读树结构：延伸编排可在表锁外调用，账单累加同步保证并发安全。
+     */
+    public double judgeOne(String content, String name, String yes, String no, String rule) throws IOException {
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
         qs.put(name, new NoulSpec(prompts.noulInstructions(Task.ADD, name), prompts.addCriterion(yes, name), no));
         NoulReply r = backend.noul(content, rule, qs);
-        requests++;
-        totalIn += r.inputTokens;
-        totalOut += r.outputTokens;
-        totalLatency += r.latencyMs;
-        totalCost += r.cost;
+        synchronized (this) {   // 延伸线程在表锁外调用：账单计数并发安全
+            requests++;
+            totalIn += r.inputTokens;
+            totalOut += r.outputTokens;
+            totalLatency += r.latencyMs;
+            totalCost += r.cost;
+        }
         Double p = r.probs.get(name);
         return p == null ? 0.0d : p.doubleValue();
     }

@@ -25,7 +25,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 /**
  * 问义树可视化服务（零依赖，JDK 内置 com.sun.net.httpserver）。
@@ -48,6 +50,9 @@ import java.util.concurrent.Executors;
  *   DELETE /api/t/&lt;id&gt;/node?name=X → 删除节点及其整个子树（含兜底叶），同步清理 grown/edits
  *   POST /api/t/&lt;id&gt;/gate     → 调参 {gate}（noul 门控）/ {choiceGate}（choice 采纳线），落盘
  *   POST /api/t/&lt;id&gt;/add      → 落位 {content, id?}：一条语料按判据下行落叶，随快照落盘
+ *   GET  /api/t/&lt;id&gt;/extend   → 节点延伸状态（viz 进度条轮询；phase: idle/running/done/error）
+ *   POST /api/t/&lt;id&gt;/extend   → 手动触发 {node}：后台串行拆细该节点（与水位 growth.splitAt×
+ *                               growth.splitFactor 自动触发同链路），不阻塞 add/quest
  *   POST /api/t/&lt;id&gt;/quest    → 查询 {query}：与节点名完全一致时直接返回该节点子树内容（零模型）；
  *                                  否则自然语言检索，返回命中叶 + 排序文档 + 判定轨迹
  *   GET  /api/models          → 决策模型列表 ?provider=mock|jev|openrouter|bailian（上游零 token 元数据；
@@ -69,6 +74,15 @@ import java.util.concurrent.Executors;
 public final class SemQuestServer {
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
+
+    /** 延伸任务全局单工线程池（daemon）：延伸是重整理（分钟级），全局串行排队足够，多表任务不互抢资源。 */
+    private static final ExecutorService EXTEND_POOL = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        public Thread newThread(Runnable r) {
+            Thread th = new Thread(r, "semquest-extend");
+            th.setDaemon(true);
+            return th;
+        }
+    });
 
     public static void main(String[] args) throws Exception {
         boolean reseed = false;
@@ -297,6 +311,7 @@ public final class SemQuestServer {
         final List<Map<String, Object>> grown;
         final List<Map<String, Object>> edits;
         volatile SemQuestTree tree;   // --reseed 时 schema 重建整体替换
+        final ExtendStatus extend = new ExtendStatus();   // 延伸任务状态（内存态不落盘，viz 进度条轮询）
 
         Table(String id, String name, String note, long createdAt, boolean demo,
               SemQuestTree tree, Path file,
@@ -310,6 +325,45 @@ public final class SemQuestServer {
             this.file = file;
             this.grown = grown;
             this.edits = edits;
+        }
+
+        /** 延伸任务状态（内存态，不落盘，重启归零）：viz 进度条轮询用。phase: idle/running/done/error。 */
+        static final class ExtendStatus {
+            volatile String phase = "idle";
+            volatile String node;
+            volatile int round;          // 已完成轮数（每轮长出一个收编子枝）
+            volatile int maxRounds;      // growth.extend.maxNew
+            volatile int rejudged;       // 全程累计已重判条数（进度分子，多轮单调）
+            volatile int totalDocs;      // 全程累计待整理存量（进度分母，各轮快照累加）
+            volatile int keptBranches;   // 累计收编新枝数
+            volatile int movedDocs;      // 累计迁入新枝的存量条数
+            volatile int rolledBack;     // 累计回滚枝数
+            volatile String current = "";  // 当前动作文案
+            volatile String result;        // 结束原因 / 错误信息
+            volatile long startedAt;
+            volatile long finishedAt;
+            volatile int genIn;          // 累计生成 tokens in（延伸各轮生成调用）
+            volatile int genOut;         // 累计生成 tokens out
+
+            LinkedHashMap<String, Object> snapshot() {
+                LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+                m.put("phase", phase);
+                m.put("node", node);
+                m.put("round", round);
+                m.put("maxRounds", maxRounds);
+                m.put("rejudged", rejudged);
+                m.put("totalDocs", totalDocs);
+                m.put("keptBranches", keptBranches);
+                m.put("movedDocs", movedDocs);
+                m.put("rolledBack", rolledBack);
+                m.put("current", current);
+                m.put("result", result);
+                m.put("genIn", genIn);
+                m.put("genOut", genOut);
+                m.put("startedAt", startedAt);
+                m.put("finishedAt", finishedAt);
+                return m;
+            }
         }
     }
 
@@ -739,6 +793,8 @@ public final class SemQuestServer {
                 new AddHandler(cfg, backend, gstate).handle(t, ex);
             } else if ("addBatch".equals(action)) {
                 new AddBatchHandler(cfg, backend, gstate).handle(t, ex);
+            } else if ("extend".equals(action)) {
+                new ExtendHandler(cfg, backend, gstate).handle(t, ex);
             } else if ("doc".equals(action)) {
                 new DocHandler().handle(t, ex);
             } else {
@@ -1269,7 +1325,7 @@ public final class SemQuestServer {
                     cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
                     growthModelOf(cfg, gstate),
                     apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
-                    cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null));
+                    cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null), null);
         }
         CriterionGenerator.GrowthResult g;
         try {
@@ -1358,6 +1414,269 @@ public final class SemQuestServer {
         out.put("growthStep", gs);
     }
 
+    // ── 节点延伸（深度生长）：水位/手动双触发，后台单工串行闭环，不阻塞 add/quest ──
+
+    /** 延伸开关有效值：生长总开关与 growth.extend（默认 true）都开才生效。 */
+    private static boolean extendOnOf(Config cfg, GrowthState gstate) {
+        return growthEnabledOf(cfg, gstate) && "true".equalsIgnoreCase(cfg.get("growth.extend", "true"));
+    }
+
+    /** 延伸生成器：mock 判定链路走 MockGenerator（零 token）；真实链路 openrouter chat（growth.extend.prompt 模板，空白回内置；缺凭据回 null）。 */
+    private static CriterionGenerator buildExtendGenerator(Config cfg, SwitchableBackend backend, GrowthState gstate) {
+        if ("mock".equals(backend.name())) return new CriterionGenerator.MockGenerator();
+        String apiKey = cfg.get("openrouter.apikey", null);
+        if (apiKey == null || apiKey.trim().isEmpty()) return null;
+        return new CriterionGenerator.OpenRouterGenerator(
+                cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
+                growthModelOf(cfg, gstate),
+                apiKey, cfg.getInt("timeoutMs", 30000), null,
+                cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null),
+                cfg.get("growth.extend.prompt", null));
+    }
+
+    /** 延伸水位：growth.splitAt × growth.splitFactor（默认 255×0.7=178），≤0 视为关闭水位触发。 */
+    private static int extendWatermark(Config cfg) {
+        return (int) Math.round(cfg.getInt("growth.splitAt", 255) * cfg.getDouble("growth.splitFactor", 0.7));
+    }
+
+    /**
+     * 水位触发（add/addBatch 落位后、表锁内调用）：落位叶（兜底叶则上溯其父节点）存量超过水位 →
+     * 提交后台延伸任务，本请求立即返回不等待；同一时刻每表至多一个延伸任务在跑（单工池排队）。
+     */
+    private static void maybeExtendOnWatermark(Table t, SemQuestTree.AddReport rep,
+                                               Config cfg, SwitchableBackend backend, GrowthState gstate) {
+        if (!extendOnOf(cfg, gstate)) return;
+        int watermark = extendWatermark(cfg);
+        if (watermark <= 0) return;
+        if ("running".equals(t.extend.phase)) return;   // 已有延伸在跑：本条留给它下一轮快照
+        for (String leaf : rep.leaves) {
+            String target = leaf.endsWith(SemQuestTree.OTHER_SUFFIX)
+                    ? leaf.substring(0, leaf.length() - SemQuestTree.OTHER_SUFFIX.length()) : leaf;
+            if (t.tree.extendDocCount(target) > watermark) {
+                submitExtend(t, target, false, cfg, backend, gstate);
+                return;   // 一次落位最多触发一个，其余超水位叶由该任务完成后下次落位再触发
+            }
+        }
+    }
+
+    /** 提交延伸任务（表锁内调用）：running 中幂等忽略；重置状态后交后台单工池。manual=手动触发（强制拆细，不受水位限制）。 */
+    private static void submitExtend(Table t, String node, boolean manual, Config cfg, SwitchableBackend backend, GrowthState gstate) {
+        Table.ExtendStatus st = t.extend;
+        if ("running".equals(st.phase)) return;
+        st.phase = "running";
+        st.node = node;
+        st.current = "排队中…";
+        st.result = null;
+        st.round = 0;
+        st.maxRounds = 0;
+        st.rejudged = 0;
+        st.totalDocs = 0;
+        st.keptBranches = 0;
+        st.movedDocs = 0;
+        st.rolledBack = 0;
+        st.genIn = 0;
+        st.genOut = 0;
+        st.startedAt = System.currentTimeMillis();
+        st.finishedAt = 0;
+        EXTEND_POOL.execute(new Runnable() {
+            public void run() {
+                extendTask(t, node, manual, cfg, backend, gstate);
+            }
+        });
+    }
+
+    /**
+     * 延伸任务体（后台单工线程）：串行闭环——每轮「锁内快照(planExtend) → 锁外生成 1 个更细子类 →
+     * 锁内入树 → 逐条锁外重判 + 锁内短临界区移动 → 轮末落盘」。模型调用全程不持表锁，锁段只包
+     * 结构变更与指针移动，add/quest 照常并行（大脑夜间加固，白天照常运转）。
+     * 终止：水位以下（仅自动触发；手动=强制拆细不受水位限）/ 生成器返回空（无更细区分）/
+     * 达 growth.extend.maxNew / 撞名 / 层满 / 存量不足 2 条 / 轮内零收编（undoGrow 零模型回滚）。
+     * 全程可递复用于任意深度（2、3、4…层同一链路）。
+     */
+    private static void extendTask(Table t, String node, boolean manual, Config cfg, SwitchableBackend backend, GrowthState gstate) {
+        Table.ExtendStatus st = t.extend;
+        try {
+            int maxRounds = cfg.getInt("growth.extend.maxNew", 8);
+            int sampleN = cfg.getInt("growth.extend.samples", 40);
+            int watermark = extendWatermark(cfg);
+            st.maxRounds = maxRounds;
+            CriterionGenerator gen = buildExtendGenerator(cfg, backend, gstate);
+            if (gen == null) {
+                st.phase = "error";
+                st.result = "缺 openrouter 凭据，无法生成判据";
+                st.finishedAt = System.currentTimeMillis();
+                return;
+            }
+            int rounds = 0, movedAll = 0, rolled = 0;
+            String stop = null;
+            while (rounds < maxRounds) {
+                if (!growthEnabledOf(cfg, gstate)) {
+                    stop = "生长开关已关闭";
+                    break;
+                }
+                SemQuestTree.ExtendPlan plan;
+                synchronized (t) {
+                    plan = t.tree.planExtend(node, sampleN);
+                    int maxBranches = cfg.getInt("growth.maxBranches", 12);
+                    if (plan.siblings.size() >= maxBranches) {
+                        stop = "该层分支已满（growth.maxBranches=" + maxBranches + "）";
+                        break;
+                    }
+                }
+                if (manual) {
+                    if (plan.totalDocs < 2) {   // 手动强制：不限水位，但单条已无拆细空间
+                        stop = "存量不足 2 条，已无可拆细的空间";
+                        break;
+                    }
+                } else if (plan.totalDocs <= watermark) {
+                    stop = "已降至水位以下";
+                    break;
+                }
+                int judgedBase = st.rejudged;   // 进度全程累计口径：多轮百分比单调不回跳
+                st.totalDocs += plan.totalDocs;
+                st.current = "生成更细的子类判据…";
+                CriterionGenerator.GrowthResult g = gen.generateExtend(node, plan.parentYes, plan.totalDocs,
+                        plan.siblings, plan.samples);
+                st.genIn += g.inputTokens;   // 生成账单：与重判账单（judgeOne 累加进 stats）口径互补
+                st.genOut += g.outputTokens;
+                if (g.branches.isEmpty()) {
+                    stop = "生成器认为现有子分支已能覆盖，无更细的区分";
+                    break;
+                }
+                String[] b = g.branches.get(0);
+                LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
+                synchronized (t) {
+                    try {
+                        t.tree.addNode(node, b[0], b[1], null);
+                    } catch (IllegalArgumentException e) {
+                        rolled++;
+                        stop = "新分支撞名: " + b[0];
+                        break;   // 树未变，无需落盘
+                    }
+                    rec.put("parent", node);
+                    rec.put("name", b[0]);
+                    rec.put("yes", b[1]);
+                    rec.put("no", "");
+                    rec.put("auto", Boolean.TRUE);
+                    rec.put("extend", Boolean.TRUE);   // 延伸来源标记：与落兜底生长区分
+                    t.grown.add(rec);
+                    persistTable(t);
+                }
+                st.round = rounds + 1;
+                String no = NoulSpec.autoNo(b[1]);
+                int movedThis = 0, judged = 0;
+                for (String[] d : plan.affected) {
+                    st.current = "存量重判 " + judged + "/" + plan.affected.size();
+                    double prob;
+                    try {
+                        prob = t.tree.judgeOne(d[1], b[0], b[1], no, plan.rule);   // 锁外调模型
+                    } catch (IOException e) {
+                        judged++;   // 单条判定失败视作不过门：留在原位
+                        continue;
+                    }
+                    judged++;
+                    boolean mv;
+                    synchronized (t) {
+                        mv = t.tree.moveJudged(node, d[0], b[0], prob);   // 锁内短临界区移动
+                    }
+                    if (mv) movedThis++;
+                    st.rejudged = judgedBase + judged;
+                    st.movedDocs = movedAll + movedThis;
+                }
+                synchronized (t) {
+                    if (movedThis == 0) {   // 验收未过：整枝回滚（undoGrow 零模型，存量原位还原）
+                        try {
+                            t.tree.undoGrow(node, b[0]);
+                        } catch (Exception ignore) {
+                            // 回滚失败极罕见（节点刚加进去）：留待人工清理
+                        }
+                        t.grown.remove(rec);
+                        rolled++;
+                    } else {
+                        t.tree.bustQuestCache();   // 落位变了，查询缓存作废
+                    }
+                    persistTable(t);
+                }
+                if (movedThis == 0) {
+                    st.rolledBack = rolled;
+                    stop = "验收未过：存量无一收编进「" + b[0] + "」，已回滚";
+                    break;
+                }
+                rounds++;
+                movedAll += movedThis;
+                st.keptBranches = rounds;
+                st.movedDocs = movedAll;
+            }
+            st.current = "";
+            st.result = stop != null ? stop : ("完成：" + rounds + " 个新枝 · 迁入 " + movedAll + " 条存量");
+            st.phase = "done";
+            st.finishedAt = System.currentTimeMillis();
+        } catch (Exception e) {
+            st.phase = "error";
+            st.result = e.getMessage() == null ? e.toString() : e.getMessage();
+            st.finishedAt = System.currentTimeMillis();
+        }
+    }
+
+    /**
+     * GET /api/t/&lt;id&gt;/extend → 延伸状态（viz 进度条轮询）；
+     * POST {node} → 手动触发对该节点的延伸（后台执行；与水位触发同链路，running 中幂等返回现状态）。
+     */
+    private static final class ExtendHandler extends BaseHandler {
+        private final Config cfg;
+        private final SwitchableBackend backend;
+        private final GrowthState gstate;
+
+        ExtendHandler(Config cfg, SwitchableBackend backend, GrowthState gstate) {
+            this.cfg = cfg;
+            this.backend = backend;
+            this.gstate = gstate;
+        }
+
+        void handle(Table t, HttpExchange ex) throws IOException {
+            if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+                out.put("tableId", t.id);
+                out.putAll(t.extend.snapshot());
+                json(ex, 200, Json.write(out));
+                return;
+            }
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                ex.sendResponseHeaders(405, -1);
+                return;
+            }
+            Map<String, Object> req;
+            try {
+                req = Json.parseObject(readBody(ex));
+            } catch (Exception e) {
+                json(ex, 400, "{\"error\":" + Json.str("请求体不是合法 JSON") + "}");
+                return;
+            }
+            Object nv = req.get("node");
+            if (!(nv instanceof String) || ((String) nv).trim().isEmpty()) {
+                json(ex, 400, "{\"error\":" + Json.str("缺 node 节点名") + "}");
+                return;
+            }
+            String node = ((String) nv).trim();
+            SemQuestTree.ExtendPlan pre;
+            try {
+                pre = t.tree.planExtend(node, 1);   // 预检：不存在/兜底叶/choice 表在这里快速报错
+            } catch (Exception e) {
+                json(ex, 400, "{\"error\":" + Json.str(e.getMessage()) + "}");
+                return;
+            }
+            if (pre.totalDocs == 0) {
+                json(ex, 400, "{\"error\":" + Json.str("节点「" + node + "」没有存量内容，无可延伸") + "}");
+                return;
+            }
+            boolean already = "running".equals(t.extend.phase);
+            if (!already) submitExtend(t, node, true, cfg, backend, gstate);   // 手动=强制拆细，水位只管自动触发
+            LinkedHashMap<String, Object> out = t.extend.snapshot();
+            out.put("alreadyRunning", Boolean.valueOf(already));
+            json(ex, already ? 200 : 202, Json.write(out));
+        }
+    }
+
     /** POST /api/t/&lt;id&gt;/add {content, id?} → 一条语料按判据下行落叶；id 缺省自动生成，落位随快照落盘。 */
     private static final class AddHandler extends BaseHandler {
         private final Config cfg;
@@ -1399,6 +1718,7 @@ public final class SemQuestServer {
                 // 数据驱动生长：落位全为兜底叶（或空树根叶）→ 树里没有能承接这条内容的类别，
                 // 同步生成判据长新枝并收编本条（成功后 out.leaves 换为新枝、挂 growthStep）
                 growOnFallback(t, id, ((String) cv).trim(), rep, out, cfg, backend, gstate);
+                maybeExtendOnWatermark(t, rep, cfg, backend, gstate);   // 水位触发：落位叶堆积超限 → 后台延伸（不阻塞本请求）
                 out.put("stats", t.tree.statsLine());   // stats 后置：含生长重判与生成器的 token
                 persistTable(t);
                 json(ex, 200, Json.write(out));
@@ -1479,6 +1799,7 @@ public final class SemQuestServer {
                     r.put("steps", stepsJson(rep.steps));
                     // 数据驱动生长：本条落位全为兜底叶（或空树根叶）→ 同步长新枝并收编（成功后本条 leaves 换新枝）
                     growOnFallback(t, id, ((String) cv).trim(), rep, r, cfg, backend, gstate);
+                    maybeExtendOnWatermark(t, rep, cfg, backend, gstate);   // 水位触发：单线程池排队，本请求不等
                     results.add(r);
                     added++;
                 } catch (IOException e) {
