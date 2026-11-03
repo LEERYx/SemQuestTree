@@ -43,3 +43,4 @@ build/
 semquest.properties
 # 本地表数据（tables/*.json 是运行期用户数据）
 tables/
+/.qoder/
