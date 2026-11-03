@@ -272,6 +272,7 @@ public final class SemQuestServer {
                 noulAdd,
                 noulSearch != null ? noulSearch : noulAdd,
                 cfg.get("prompt.noul.search.criterion", null),
+                cfg.get("prompt.noul.add.criterion", null),
                 cfg.get("prompt.noul.search.query", null),
                 choiceRoot, choiceNode,
                 searchRoot != null ? searchRoot : choiceRoot,
