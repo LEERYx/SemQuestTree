@@ -425,6 +425,18 @@ public final class SemQuestTree {
         return rep;
     }
 
+    /** 删除一条落位（零模型调用）：从全部落位叶上摘下并移出索引；返回原落位叶名；未知 id 抛 400。 */
+    public List<String> removeDoc(String docId) {
+        Doc d = docIndex.remove(docId);
+        if (d == null) throw new IllegalArgumentException("未知文档: " + docId);
+        for (String ln : d.leaves) {
+            SemNode n = find(root, ln);
+            if (n != null) n.docs.remove(d);
+        }
+        bustQuestCache();   // 落位变了，查询缓存全部作废
+        return new ArrayList<String>(d.leaves);
+    }
+
     private void descendAdd(SemNode node, String content, Doc doc, AddReport rep, String rule) throws IOException {
         if (node.isLeaf()) {
             node.docs.add(doc);
@@ -827,6 +839,17 @@ public final class SemQuestTree {
         return m;
     }
 
+    /** 层结构速览（生长编排用）：指定节点的真实子分支清单，每项 {name, yes 判据（空回名字）}；节点不存在返回 null。 */
+    public List<String[]> branchView(String nodeName) {
+        SemNode n = find(root, nodeName);
+        if (n == null) return null;
+        List<String[]> out = new ArrayList<String[]>();
+        for (SemNode c : n.children) {
+            out.add(new String[]{c.name, c.yes == null || c.yes.trim().isEmpty() ? c.name : c.yes});
+        }
+        return out;
+    }
+
     /** 全树结构 → 可 JSON 化的 Map（含每叶 docCount，不含正文——正文点击才查）。 */
     public Map<String, Object> treeMap() {
         LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
@@ -1094,6 +1117,54 @@ public final class SemQuestTree {
             }
         }
         return rep;
+    }
+
+    /**
+     * 生长回滚（growNode 的逆操作，零模型调用）：删掉刚长出的分支，把其收编的存量放回原位。
+     * 本枝为父层唯一实子（父层原为叶，分化路径）→ 收编存量连同分化新建的兜底叶存量全部还原到父叶本身，
+     * 父层回叶形态（空兜底叶连带撤掉）；否则（挂靠回填路径）→ 收编存量还原到父层兜底叶。
+     * 与 removeNode 不同：不删任何文档、不受「兜底叶仍有落位」护栏限制（专为生长验收回滚用）。
+     */
+    public void undoGrow(String parentName, String nodeName) {
+        bustQuestCache();   // 结构变了，查询缓存全部作废
+        SemNode p = find(root, parentName);
+        SemNode n = p == null ? null : find(root, nodeName);
+        if (p == null || n == null || n.other || !p.children.contains(n)) {
+            throw new IllegalArgumentException("回滚目标非法: " + nodeName);
+        }
+        boolean toLeaf = p.children.size() == 1;   // 本枝是唯一实子 → 删除后父层回叶形态
+        List<Doc> back = new ArrayList<Doc>(docsUnder(n));
+        if (toLeaf && p.otherLeaf != null) back.addAll(p.otherLeaf.docs);
+        for (Doc d : back) {
+            stripFromSubtree(n, d);   // 从收编枝（及其子树）上摘下
+            if (toLeaf) {
+                if (p.otherLeaf != null) {   // 分化新建的兜底叶：存量一并还原到父叶
+                    p.otherLeaf.docs.remove(d);
+                    d.leaves.remove(p.otherLeaf.name);
+                }
+                p.docs.add(d);
+                d.leaves.add(p.name);
+            } else {
+                SemNode o = otherLeaf(p);
+                o.docs.add(d);
+                d.leaves.add(o.name);
+            }
+        }
+        p.children.remove(n);
+        if (toLeaf && p.otherLeaf != null && p.otherLeaf.docs.isEmpty()) {
+            p.otherLeaf = null;   // 分化新建的空兜底叶连带撤掉，父层回叶形态
+        }
+    }
+
+    /** 从 n 子树内的各叶上摘下 doc（含兜底叶；叶内指针与 doc 叶名指针双向清除）。 */
+    private static void stripFromSubtree(SemNode n, Doc d) {
+        if (n.isLeaf()) {
+            n.docs.remove(d);
+            d.leaves.remove(n.name);
+            return;
+        }
+        for (SemNode c : n.children) stripFromSubtree(c, d);
+        if (n.otherLeaf != null) stripFromSubtree(n.otherLeaf, d);
     }
 
     /** 单题重判（增长回填用），计入账单。规则取父子树的有效规则（有覆盖用覆盖，无则全局）。 */

@@ -118,6 +118,16 @@
 
 **错误**：400 根节点与兜底叶不可直接删 / 末位分支受兜底落位护栏保护。
 
+### DELETE /api/t/&lt;id&gt;/doc?name=X [免费]
+
+删除一条落位（零模型调用）：从其全部落位叶上摘下并移出索引，此后不再被任何检索命中；树结构不动。
+
+**入参**：`name` = 文档 ID（add 时自带的或自动生成的 `U-…`）。
+
+**出参**：`meta` + `{id, removedLeaves(原落位叶名), stats}`。
+
+**错误**：400 缺 name / 未知 ID；405 非 DELETE。
+
 ---
 
 ## 三、判定 `/api/t/<id>/…`
@@ -126,7 +136,9 @@
 
 落位：一条语料沿判据树下行落进叶。**入参** `{content, id?}`：`id` 缺省自动生成 `U-<36进制时间戳>`；**同 id 重落 = 替换旧落位**（先摘旧指针再落位）。
 
-**出参**：`meta` + `{id, leaves(落进的叶名), steps, stats}`。
+**数据驱动生长**（`growth.enabled=true` 时）：本条落位全为兜底（树里没有能承接这条内容的类别，含空树根叶）→ 服务端按**本条内容**调生成模型提出 ≤`growth.maxNew` 个新分支逐个验收入树；任一收编即响应 `leaves` 换为新枝、记 grown（auto 标记，重启零模型回放）并挂 `growthStep`；全部未收编则分支当场回滚、本条留在原兜底叶数据不丢。生成模型经 `growth.model` 配置、提示词经 `growth.prompt` 配置（均可热载，提示词空白回内置模板）。失败原因（该层分支已满 / 缺 openrouter 凭据 / 生成调用失败）也写进 `growthStep.failed`。
+
+**出参**：`meta` + `{id, leaves(生长收编后为新枝), steps, growthStep?, stats}`。`growthStep`：`{parent, genTokens, genInTokens, genOutTokens, genMs, kept(收编保留数), branches:[{name, yes, prob(验收 P)}], failedBranches(已回滚分支), failed(放弃原因)}`。
 
 **错误**：400 缺 content / JSON 非法；502 判定调用失败（超时、上游报错）。
 
@@ -134,13 +146,13 @@
 
 批量导入：`docs` 里每条独立落位，**单条失败不牵连整批**，全部结束后统一落盘一次。**入参** `{docs:[{id?, content}…]}`，单次上限 500 条（超出 400）；条目缺 `content` 记入 `failed` 继续。
 
-**出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves, steps}], stats}`。
+**出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves, steps, growthStep?}], stats}`——每条独立触发数据驱动生长（同 add，卡片挂在该条行下）。
 
 **错误**：400 缺 docs / docs 空 / 超 500 条；单条判定失败进 `failed` 而非整体报错。
 
 ### POST /api/t/&lt;id&gt;/quest [模型]
 
-检索：自然语言查询沿判据树语义下行，命中叶上的文档按分排序返回。**节点名直取**：查询与节点名完全一致时不调模型，直接返回该节点子树全部叶的落位内容（复用节点直取；`fastPath:true`、`steps` 空数组、`matchedLeaves`=子树叶名、score=文档在子树内的落位叶数、stats 标「节点直取 · N 条 · 零模型调用」）。noul 检索与落位同条件镜像：某层零分支过门即命中该层兜底叶（`X_OTHER`），其存量文档照常返回；choice 单路径，途中胜出兜底项即无命中。查询结果缓存：同一条查询（原文完全一致）再次检索时直接返回上次结果（`fastPath:true`，零模型调用，`steps` 为首次慢路轨迹的原样复放），noul / choice 均生效。缓存按命中次数排序淘汰（调用最多的条目最不易淘汰，次数最少的先出局），容量 `questCacheSize` 在 semquest.properties 配置（默认 256，0=关闭），保存配置热载；**任何表变更（落位 / 加改删节点 / 调门控 / 提示词热载）即清空该表全部缓存**，缓存仅内存不落盘。
+检索（纯读）：自然语言查询沿判据树语义下行，命中叶上的文档按分排序返回——查不到就是查不到，**不为查询改树**（生长只在 add/addBatch 落兜底时触发）。**节点名直取**：查询与节点名完全一致时不调模型，直接返回该节点子树全部叶的落位内容（复用节点直取；`fastPath:true`、`steps` 空数组、`matchedLeaves`=子树叶名、score=文档在子树内的落位叶数、stats 标「节点直取 · N 条 · 零模型调用」）。noul 检索与落位同条件镜像：某层零分支过门即命中该层兜底叶（`X_OTHER`），其存量文档照常返回；choice 单路径，途中胜出兜底项即无命中。查询结果缓存：同一条查询（原文完全一致）再次检索时直接返回上次结果（`fastPath:true`，零模型调用，`steps` 为首次慢路轨迹的原样复放），noul / choice 均生效。缓存按命中次数排序淘汰（调用最多的条目最不易淘汰，次数最少的先出局），容量 `questCacheSize` 在 semquest.properties 配置（默认 256，0=关闭），保存配置热载；**任何表变更（落位 / 加改删节点 / 调门控 / 提示词热载）即清空该表全部缓存**，缓存仅内存不落盘。
 
 **入参** `{query}`。
 
@@ -188,6 +200,16 @@
 热切换 `{provider, model}`：仅校验凭据非空并替换通道，不发推理。provider 可选 `mock | jev | openrouter | bailian`（mock 零凭据关键词匹配，体验/测试用）。
 
 **出参**：`{backend, provider, model}`。**错误**：400 未知 provider / 缺凭据（key 是否有效在真正判定时才暴露，401=key 错、403=无额度）。
+
+### GET /api/growth [免费]
+
+自我生长开关/生成模型有效值 + openrouter chat 模型清单（生成模型目前仅支持 openrouter）：`{enabled, model, hasKey, source, models}`。有效值 = viz 🌱 运行时覆盖优先，回退 `growth.enabled` / `growth.model` 配置（热载）；`hasKey` = openrouter 凭据是否已配。models 清单：`growth.models` 手动清单（`config`）> 上游 `/api/v1/models` 零 token 公开元数据（`upstream`，免费款排前）> 静态候选（`fallback`）；当前生效模型缺席时置顶补入，条目 `{id, name?, free}`。
+
+### POST /api/growth [免费]
+
+运行时热改 `{enabled?, model?}`（至少一项）：替换内存覆盖，零推理，立即生效；重启回 `growth.*` 配置值。两字段均可选，仅出现的字段被覆盖（enabled 须为布尔，字符串等错型报 400）。
+
+**出参**：`{enabled, model, hasKey}`。**错误**：400 两字段全缺 / enabled 非布尔。
 
 ---
 

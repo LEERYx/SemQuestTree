@@ -19,6 +19,29 @@ choiceGate=0.6
 # 按命中次数排序淘汰（调用最多最不易淘汰）；0=关闭；热载，仅内存不落盘
 questCacheSize=256
 
+# ── 数据驱动生长：add 落兜底同步长新枝（默认关闭；热载）──────────────────
+# add/addBatch 落位全为兜底叶（或空树根叶）= 树里没有能承接这条内容的类别，
+# 同步调生成模型按本条内容产出 ≤growth.maxNew 个新分支（名字+判据）逐个验收：
+# 入树后从重判结果看本条是否收编，未收编 undoGrow 原位回滚不丢数据；全部失败本条保留在兜底叶。
+# 收编的分支记入 grown 回放（auto 标记），重启零模型恢复，可用节点删除撤销。
+# 注意：生长在表锁内同步执行，生成期间该表其他请求排队；quest 检索纯读不改树（查不到就是查不到）。
+growth.enabled=false
+# 生成模型（openrouter chat completions 端点，apikey 复用 openrouter.apikey）
+# 默认款为免费中文模型，生成零成本；免费款上下线是常态，不可用时在上游换 ⚡·免费 的
+growth.model=xingchen-agi/xing4.0-29b-a4b:free
+# 生长生成模型手动清单（逗号分隔；配置即清单优先生效，保存即热载；留空回上游实时拉取；
+# 运行时也可在可视化页头部 🌱 开关与下拉框热改，重启回这里的配置值）
+growth.models=
+# 端点覆盖（可选，默认 https://openrouter.ai/api/v1/chat/completions）
+#growth.url=https://openrouter.ai/api/v1/chat/completions
+# 护栏：同一父层分支数达到此值后不再生长（防无限膨胀）；热载
+growth.maxBranches=12
+# 单次生长最多提出的新分支数；热载
+growth.maxNew=2
+# 生成提示词模板（可选，留空 = 内置默认；热载）
+# 占位符：{parent}=层节点名、{siblings}=现有分支清单、{count}/{samples}=落兜底内容、{maxNew}=上限
+#growth.prompt=
+
 # ── 判定提示词（系统侧组装文案；判据 yes/no 与规则文本归树，不在这里）──
 # 热载：保存即应用到全部表，同时清空各表查询缓存
 # 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文；删行或留空=内置默认

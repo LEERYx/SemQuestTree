@@ -11,6 +11,7 @@
 - **人可管**——判据即配置：界面直接改，子树规则可覆盖，保存即生效
 - **零基建**——不要向量模型、不要向量库、不要索引进程；JDK 8+ 跑起来就是
 - **可视化**——内置服务：展开树、点节点、改判据、换模型、查询控制台
+- **会生长（默认关）**——quest 落兜底即树说「不知道」：免费生成模型当场写新分支判据，触发查询重跑命中才保留（否则回滚），当场命中；`growth.enabled` 开启
 
 适合：FAQ / 政策条款定位、工单分流、意图路由——一切要人看得懂管得住的小中规模索引。
 
@@ -100,6 +101,7 @@ java -cp target/classes org.example.SemQuestClient http://localhost:8790   # 指
 | `choiceGate` | choice 采纳线，默认 0.6（新建 choice 表的初始值；表内右上角可按表调整） |
 | `prompt.*` | 判定提示词（系统侧组装文案），add（落位）与 search（检索）各一套：`prompt.rule.add` / `prompt.rule.search`（state 规则；新表默认值——热载只置换规则仍等于上次默认文本的表，已自定义的不动）、`prompt.noul.add.instructions`（{name}=分支名）、`prompt.noul.search.criterion`（{yes}=判据原文、{name}=分支名；判定前对判据文本套检索框架，让「所有悲伤的话」这类泛查询能过机制描述型判据——落位侧恒等 `{yes}` 写死，无配置键）、`prompt.noul.search.query`（{query}=查询原文；检索请求也包上角色框架，给判据框架里的「该查询」提供指代源，元描述查询不被当成内容本身判定，默认「用户想检索：{query}」，配 `{query}` 恒等退回）、`prompt.choice.add.root` / `prompt.choice.add.node`（{node}=层节点名，ROOT 层用 root 键）、`prompt.choice.other`（兜底选项描述）；可选分野键 `prompt.noul.search.instructions` / `prompt.choice.search.root` / `prompt.choice.search.node` 缺省或留空即继承 add 侧同键；删行或留空回内置默认 |
 | `questCacheSize` | 查询结果缓存容量（条），默认 256；0=关闭；同款查询零模型直返，保存配置热载 |
+| `growth.*` | 检索即计算·兜底同步生长（默认关）：`growth.enabled` 开关 / `growth.model` 生成模型（默认免费中文款 xingchen-agi/xing4.0-29b-a4b:free，key 复用 `openrouter.apikey`）/ `growth.url` 端点覆盖（可选）/ `growth.maxBranches` 层满护栏（默认 12）——quest 落兜底时同步生成 ≤2 个新分支，验收重跑未命中即回滚，全部失败回原兜底结果；热载 |
 | `schema` | demo 表迁移来源，默认 driver-intent-schema.json |
 | `timeoutMs` | 单请求超时（毫秒） |
 | `server.port` / `server.tables` / `server.data` / `server.viz` | 服务端口 / 表目录 / 旧版数据文件（迁移用） / 页面文件（重启生效） |
@@ -108,7 +110,7 @@ java -cp target/classes org.example.SemQuestClient http://localhost:8790   # 指
 | `mock.model` | mock 后端模型 id 展示名，默认 keyword-match |
 | `jev.models` / `openrouter.models` / `bailian.models` | 手动模型清单（逗号分隔；配置即清单优先生效，留空回上游实时拉取） |
 
-配置热载：服务内 2s 轮询 `semquest.properties`，**保存文件即生效**——`noulGate` / `choiceGate` / `questCacheSize` / `prompt.*`（提示词热载同时清空各表查询缓存；`prompt.rule.*` 只置换规则仍等于上次默认文本的表，自定义过的不动），超时、凭据、模型清单、各后端 url / model 同样热载（改凭据自动重建当前后端，零推理调用）。需重启：`server.*`、`schema`、`backend` 首选。
+配置热载：服务内 2s 轮询 `semquest.properties`，**保存文件即生效**——`noulGate` / `choiceGate` / `questCacheSize` / `growth.*`（生长开关 / 生成模型 / 护栏）/ `prompt.*`（提示词热载同时清空各表查询缓存；`prompt.rule.*` 只置换规则仍等于上次默认文本的表，已自定义的不动），超时、凭据、模型清单、各后端 url / model 同样热载（改凭据自动重建当前后端，零推理调用）。需重启：`server.*`、`schema`、`backend` 首选。
 
 ## 约定
 

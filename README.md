@@ -11,6 +11,7 @@
 - **Human-steerable** — criteria are configuration: edit them in the UI, per-subtree rule overrides, effective on save
 - **Zero infrastructure** — no embedding model, no vector DB, no indexer; JDK 8+ and it runs
 - **Visual** — built-in server: expand trees, click nodes, edit criteria, hot-swap models, query console
+- **Self-growing (opt-in)** — a quest that lands on fallbacks means the tree says "don't know": a free generation model writes new branch criteria on the spot, each kept only if the triggering query now hits it (rolled back otherwise) — the hit happens within the same request; switch on with `growth.enabled`
 
 Good fit: FAQ / policy lookup, ticket triage, intent routing — any small-to-medium index a human must read and control.
 
@@ -122,6 +123,7 @@ All configuration lives in `semquest.properties` (start by copying [`semquest.pr
 | `choiceGate` | choice acceptance line, default 0.6 (initial value for new choice tables; adjustable per table from the header) |
 | `prompt.*` | decision prompts (server-composed wording), add (placement) and search (retrieval) each with their own set: `prompt.rule.add` / `prompt.rule.search` (state rule; default for new tables — a hot reload swaps only tables still carrying the previous default text, customized ones are untouched), `prompt.noul.add.instructions` ({name} = branch name), `prompt.noul.search.criterion` ({yes} = raw criterion, {name} = branch name; wraps the criterion text in a retrieval frame before judging so generic queries like "all sad utterances" can pass mechanism-description criteria — the add side is a hard-coded identity `{yes}`, no config key), `prompt.noul.search.query` ({query} = the raw query; wraps the retrieval request in a role frame too, anchoring "the query" for the criterion frame so meta-descriptive queries are not judged as content themselves — default "用户想检索：{query}", set `{query}` for identity), `prompt.choice.add.root` / `prompt.choice.add.node` ({node} = node name, ROOT layer uses the root key), `prompt.choice.other` (fallback option description); optional divergence keys `prompt.noul.search.instructions` / `prompt.choice.search.root` / `prompt.choice.search.node` inherit the add-side value when absent or blank; delete the line or leave it blank for the built-in default |
 | `questCacheSize` | query-result cache capacity (entries), default 256; 0 = off; identical queries return with zero model calls; hot-reloaded on config save |
+| `growth.*` | search-as-computation synchronous growth (off by default): `growth.enabled` switch / `growth.model` generation model (default free Chinese xingchen-agi/xing4.0-29b-a4b:free, key reuses `openrouter.apikey`) / `growth.url` endpoint override (optional) / `growth.maxBranches` per-layer cap guard (default 12) — a fallback quest synchronously generates ≤2 new branches; acceptance re-runs the triggering query and rolls back misses, all-fail returns the original fallback result; hot-reloaded |
 | `schema` | demo table migration source, default driver-intent-schema.json |
 | `timeoutMs` | per-request timeout in milliseconds |
 | `server.port` / `server.tables` / `server.data` / `server.viz` | server port / tables dir / legacy data file (migration) / page file (restart required) |
@@ -130,7 +132,7 @@ All configuration lives in `semquest.properties` (start by copying [`semquest.pr
 | `mock.model` | display id of the mock backend model, default keyword-match |
 | `jev.models` / `openrouter.models` / `bailian.models` | manual model lists (comma-separated; when set they take priority; empty = fetch live from upstream) |
 
-Hot reload: the server polls `semquest.properties` every 2 s — **saving the file applies it at once**: `noulGate` / `choiceGate` / `questCacheSize` / `prompt.*` (prompt changes also clear the query caches; `prompt.rule.*` swaps only tables still carrying the previous default text), plus timeout, credentials, per-backend url / model and model lists (changed credentials rebuild the backend, zero inference). Restart required: `server.*`, `schema`, initial `backend`.
+Hot reload: the server polls `semquest.properties` every 2 s — **saving the file applies it at once**: `noulGate` / `choiceGate` / `questCacheSize` / `growth.*` (growth switch / generation model / guard) / `prompt.*` (prompt changes also clear the query caches; `prompt.rule.*` swaps only tables still carrying the previous default text), plus timeout, credentials, per-backend url / model and model lists (changed credentials rebuild the backend, zero inference). Restart required: `server.*`, `schema`, initial `backend`.
 
 ## Conventions
 

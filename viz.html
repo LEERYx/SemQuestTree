@@ -68,9 +68,13 @@
   .d-crit div + div { margin-top: 4px; }
   .d-sub { font-size: 12px; letter-spacing: 2px; color: #8b95a5; margin-bottom: 10px; }
   .d-none { color: #5b6472; font-size: 13px; }
-  .doc { background: #12161d; border: 1px solid #232a36; border-radius: 10px;
+  .doc { position: relative; background: #12161d; border: 1px solid #232a36; border-radius: 10px;
     padding: 12px 14px; margin-bottom: 10px; }
   .doc:hover { border-color: #354052; }
+  .doc-del { position: absolute; top: 9px; right: 10px; border: none; background: transparent;
+    color: #5b6472; cursor: pointer; font-size: 13px; padding: 2px 8px; border-radius: 5px; }
+  .doc-del:hover { color: #ef7d7d; background: #2a1414; }
+  .doc-del:disabled { opacity: .4; cursor: default; }
   .doc-id { display: inline-block; font-family: ui-monospace, Menlo, monospace;
     font-size: 11.5px; color: #5eead4; background: #12241f;
     border: 1px solid #245743; border-radius: 5px; padding: 0 7px; margin-bottom: 7px; }
@@ -134,6 +138,15 @@
   .fast-badge { display: inline-block; font-size: 11px; color: #5eead4;
     background: #173229; border: 1px solid #245743; border-radius: 99px;
     padding: 1px 10px; margin-left: 8px; letter-spacing: 0; }
+  .grow-card { background: #12241f; border: 1px solid #245743; border-radius: 10px;
+    padding: 10px 14px; margin: 8px 0 2px; font-size: 12.5px; color: #b7e7d4; }
+  .grow-card .grow-gen { float: right; font-size: 11px; color: #5eead4;
+    font-family: ui-monospace, Menlo, monospace; letter-spacing: 0; }
+  .grow-branch { margin-top: 6px; }
+  .grow-p { font-size: 11px; color: #5eead4; margin-left: 4px;
+    font-family: ui-monospace, Menlo, monospace; }
+  .grow-yes { font-size: 11.5px; color: #8b95a5; margin-top: 3px; }
+  .grow-fail { background: #16181d; border-color: #2a323f; color: #8b95a5; }
   .q-rank { background: #12161d; border: 1px solid #232a36; border-radius: 10px;
     padding: 11px 14px; margin-bottom: 8px; display: flex; gap: 12px; align-items: flex-start; }
   .q-score { font-family: ui-monospace, Menlo, monospace; font-size: 15px; font-weight: 700;
@@ -156,6 +169,9 @@
   .gate-lb input:focus { outline: none; border-color: #245743; }
   .btn.danger { background: #2a1414; border-color: #5c2323; color: #ef7d7d; }
   .btn.danger:hover { border-color: #7c3030; color: #ff9b9b; }
+  #growthToggle { font-size: 13px; padding: 3px 9px; }
+  #growthToggle.growth-on { color: #5eead4; border-color: #245743; background: #173229; }
+  #growthModel { max-width: 150px; }
 
   /* ── 开始页（全部表）────────────────────────────────────────── */
   #startView { flex: 1; overflow: auto; padding: 22px 28px 60px; }
@@ -226,6 +242,8 @@
     </select>
     <input id="modelFilter" data-i18n-ph="hdr.modelFilterPh" placeholder="筛模型…">
     <select id="model" data-i18n-title="hdr.modelTitle"></select>
+    <button class="btn" id="growthToggle" style="display:none">🌱</button>
+    <select id="growthModel" style="display:none" data-i18n-title="hdr.growthModelTitle"></select>
   </div>
   <div class="hstats">
     <span id="stats"></span>
@@ -314,6 +332,7 @@
       'hdr.editTable': '修改表名 / 备注',
       'hdr.providerTitle': '决策后端',
       'hdr.modelTitle': '决策模型',
+      'hdr.growthModelTitle': '生长生成模型（openrouter chat，只管写判据；判定模型用左侧）',
       'hdr.modelFilterPh': '筛模型…',
       'hdr.docs': '落位 {n} 条',
       'lang.title': '切换语言 / Switch language',
@@ -340,6 +359,8 @@
       'detail.children': '子节点 · {n}', 'detail.docs': '落位数据', 'detail.noDocs': '（该叶暂无落位）',
       'detail.subContent': '子树内容', 'detail.subContentN': '子树内容 · {n}',
       'detail.loadMore': '加载更多（共 {n} 条）',
+      'detail.delDoc': '删除这条落位', 'detail.docDeleted': '已删除 {id}（摘自 {n} 个叶）',
+      'detail.docDelFail': '删除失败',
       'detail.otherNoul': '兜底叶不参与判定请求（无判据）——本层无真实判据过门时落位于此',
       'detail.otherChoice': '兜底选项「以上都不符合」：本层无选项胜出，或胜出置信度低于采纳线 {gate} 时落位于此',
       'q.modeAdd': '落位 add', 'q.modeSearch': '检索 search',
@@ -367,6 +388,11 @@
       'quest.noHitNoul': '没有叶过门（沿途 P(yes) 均低于门控 {gate}）',
       'quest.noHitChoice': '没有命中（choice 单路径下行：途中置信度低于采纳线 {gate} 或落兜底即止）',
       'quest.noDocs': '（无命中文档）', 'quest.trace': '判定轨迹（{n} 次请求）',
+      'growth.card': '🌱 落兜底内容当场催生新分支 · {n} 个（@{parent} 层）已收编本条',
+      'growth.gen': '生成 in {in} / out {out} tokens · {ms}ms',
+      'growth.failed': '🌱 树尝试为这条内容当场生长新分支但未成功，本条保留在兜底叶',
+      'growth.failReason': '原因：{reason}',
+      'growth.rolledBack': '（候选 {names} 验收未过，已回滚）',
       'menu.addNoul': '＋ 增加判断节点（jn）', 'menu.addChoice': '＋ 增加选项（分支）',
       'menu.editNoul': '✎ 修改节点（name / yes / no）', 'menu.editChoice': '✎ 修改选项（名称 / 描述）',
       'menu.del': '－ 删除节点（含子树与落位数据）',
@@ -412,6 +438,12 @@
       'model.free': ' ·免费',
       'model.switched': '已切换: {backend} · {model}（对所有表生效）', 'model.switchFail': '切换失败',
       'model.fallback': '模型列表为静态候选（上游列表不可达或缺凭据）',
+      'growth.onTitle': '自我生长已开启：add 落兜底时树当场长新分支收编本条（点击关闭）',
+      'growth.offTitle': '自我生长已关闭（点击开启）',
+      'growth.switchedOn': '已开启自我生长：add 落兜底将当场长新分支收编本条',
+      'growth.switchedOff': '已关闭自我生长',
+      'growth.switchFail': '生长设置失败',
+      'growth.modelSwitched': '生成模型 → {model}',
     },
     en: {
       'app.docTitle': 'SemQuestTree',
@@ -420,6 +452,7 @@
       'hdr.editTable': 'Edit table name / note',
       'hdr.providerTitle': 'Decision backend',
       'hdr.modelTitle': 'Decision model',
+      'hdr.growthModelTitle': 'Growth generation model (openrouter chat, writes criteria only; decision model on the left)',
       'hdr.modelFilterPh': 'Filter models…',
       'hdr.docs': '{n} docs placed',
       'lang.title': 'Switch language / 切换语言',
@@ -446,6 +479,8 @@
       'detail.children': 'Children · {n}', 'detail.docs': 'Placed docs', 'detail.noDocs': '(no docs on this leaf yet)',
       'detail.subContent': 'Subtree content', 'detail.subContentN': 'Subtree content · {n}',
       'detail.loadMore': 'Load more ({n} total)',
+      'detail.delDoc': 'Delete this placement', 'detail.docDeleted': 'Deleted {id} (removed from {n} leaf/leaves)',
+      'detail.docDelFail': 'Delete failed',
       'detail.otherNoul': 'Fallback leaf takes no decision requests (no criteria) — content lands here when no real criterion passes this level',
       'detail.otherChoice': 'Fallback option "none of the above": lands here when no option wins, or the win confidence is below the accept line {gate}',
       'q.modeAdd': 'add', 'q.modeSearch': 'search',
@@ -473,6 +508,11 @@
       'quest.noHitNoul': 'No leaf passed the gate (every P(yes) along the way is below {gate})',
       'quest.noHitChoice': 'No hit (choice descends a single path: confidence below the accept line {gate} or a fallback ends the walk)',
       'quest.noDocs': '(no matching docs)', 'quest.trace': 'Decision trace ({n} requests)',
+      'growth.card': '🌱 Fallback content just grew {n} new branch(es) under @{parent}; this entry was adopted',
+      'growth.gen': 'generation in {in} / out {out} tokens · {ms}ms',
+      'growth.failed': '🌱 The tree tried to grow new branches for this entry but failed; it stays on the fallback leaf',
+      'growth.failReason': 'reason: {reason}',
+      'growth.rolledBack': '(candidate {names} failed acceptance and was rolled back)',
       'menu.addNoul': '＋ Add decision node (jn)', 'menu.addChoice': '＋ Add option (branch)',
       'menu.editNoul': '✎ Edit node (name / yes / no)', 'menu.editChoice': '✎ Edit option (name / description)',
       'menu.del': '－ Delete node (with subtree and placed docs)',
@@ -518,6 +558,12 @@
       'model.free': ' ·free',
       'model.switched': 'Switched: {backend} · {model} (applies to all tables)', 'model.switchFail': 'Switch failed',
       'model.fallback': 'Model list is a static fallback (upstream unreachable or credentials missing)',
+      'growth.onTitle': 'Self-growth enabled: a fallback add grows new branches on the spot and adopts the entry (click to turn off)',
+      'growth.offTitle': 'Self-growth disabled (click to turn on)',
+      'growth.switchedOn': 'Self-growth enabled: fallback adds will grow new branches on the spot',
+      'growth.switchedOff': 'Self-growth disabled',
+      'growth.switchFail': 'Growth setting failed',
+      'growth.modelSwitched': 'generation model → {model}',
     }
   };
   let LANG = localStorage.getItem('sq-lang') === 'en' ? 'en' : 'zh';
@@ -542,7 +588,7 @@
   const $ = sel => document.querySelector(sel);
   const state = { tid: null, mode: 'noul',
     expanded: new Set(), containers: {}, wraps: {}, selectedRow: null,
-    gate: 0.7, choiceGate: 0.6, tinfo: null,
+    gate: 0.7, choiceGate: 0.6, tinfo: null, growthEnabled: false,
     allModels: [], modelBarInit: false };
 
   const T0 = () => '/api/t/' + state.tid;
@@ -1119,6 +1165,7 @@
     state.selectedRow = rowEl;
     rowEl.classList.add('selected');
 
+    state.selName = name;   // 当前选中节点名（删除落位后重开详情用）
     $('#detailEmpty').style.display = 'none';
     const d = $('#detail');
     d.style.display = 'block';
@@ -1167,13 +1214,38 @@
         html += '<div class="d-none">' + esc(T('detail.noDocs')) + '</div>';
       } else {
         for (const doc of info.docs) {
-          html += '<div class="doc"><span class="doc-id">' + esc(doc.id) + '</span>' +
-                  '<div class="doc-content">' + esc(doc.content) + '</div></div>';
+          html += docRow(doc);
         }
       }
     }
     $('#detail').innerHTML = html;
   }
+
+  /** 落位卡片（叶详情与子树列表共用）：右上 ✕ 删除这条落位（零模型调用）。 */
+  function docRow(doc) {
+    return '<div class="doc"><span class="doc-id">' + esc(doc.id) + '</span>' +
+        (doc.viaLeaves && doc.viaLeaves.length
+            ? '<div class="doc-via">@' + doc.viaLeaves.map(esc).join(' · @') + '</div>' : '') +
+        '<div class="doc-content">' + esc(doc.content) + '</div>' +
+        '<button class="doc-del" data-docid="' + esc(doc.id) + '" title="' + esc(T('detail.delDoc')) + '">✕</button></div>';
+  }
+
+  // 删除一条落位（事件委托：详情面板里所有 ✕ 共用）——成功后重开当前详情 + 刷新已展开叶行
+  $('#detail').addEventListener('click', async e => {
+    const btn = e.target.closest('.doc-del');
+    if (!btn) return;
+    const id = btn.dataset.docid;
+    btn.disabled = true;
+    try {
+      const out = await apiSend(T0() + '/doc?name=' + encodeURIComponent(id), 'DELETE');
+      toast(Tf('detail.docDeleted', { id: out.id, n: (out.removedLeaves || []).length }));
+      refreshLeafRows(out.removedLeaves || []);
+      if (state.selectedRow) selectNode(state.selName, state.selectedRow);
+    } catch (err) {
+      toast(T('detail.docDelFail') + ': ' + err, true);
+      btn.disabled = false;
+    }
+  });
 
   /** 节点直取：分页拉取子树落位内容（每次 10 条），填进详情面板；选中已切换则丢弃响应。 */
   async function loadNodeDocs(name, append) {
@@ -1194,13 +1266,7 @@
       const more = $('#nd-more');
       if (more) more.remove();
       let html = '';
-      for (const doc of nd.docs) {
-        html += '<div class="doc"><span class="doc-id">' + esc(doc.id) + '</span>' +
-                '<div class="doc-content">' + esc(doc.content) + '</div>' +
-                (doc.viaLeaves && doc.viaLeaves.length
-                    ? '<div class="doc-via">@' + doc.viaLeaves.map(esc).join(' · @') + '</div>' : '') +
-                '</div>';
-      }
+      for (const doc of nd.docs) html += docRow(doc);
       list.insertAdjacentHTML('beforeend', html);
       state.ndOffset = offset + nd.docs.length;
       if (nd.truncated) {
@@ -1254,9 +1320,34 @@
     $('#model').onchange = switchModel;
     try {
       const cur = await api('/api/model');
-      $('#provider').value = cur.provider;
-      await loadModels(cur.provider, cur.model);
+      // 记忆上次最后使用的后端/模型（localStorage）：服务端重启丢运行时状态时也默认回显上次选择，
+      // 与服务器当前生效值不一致则静默热切回——避免「下拉显示 A、后端实际 B」
+      const mem = readLastModel();
+      let provider = cur.provider, model = cur.model;
+      if (mem && mem.provider && mem.model) {
+        $('#provider').value = mem.provider;
+        if ($('#provider').value === mem.provider) { provider = mem.provider; model = mem.model; }
+        else $('#provider').value = provider;
+      } else {
+        $('#provider').value = provider;
+      }
+      await loadModels(provider, model);
+      const sel = $('#model');
+      if (model && ![...sel.options].some(o => o.value === model)) {
+        const o = document.createElement('option');
+        o.value = model;
+        o.textContent = model;
+        sel.appendChild(o);
+        sel.value = model;
+      }
+      if (model && model !== cur.model) {
+        try { await apiSend('/api/model', 'POST', { provider, model }); } catch (e) { /* 切回失败：下次手选覆盖 */ }
+      }
     } catch (e) { /* 选择栏维持空态，不影响表 */ }
+  }
+
+  function readLastModel() {
+    try { return JSON.parse(localStorage.getItem('sq-last-model') || 'null'); } catch (e) { return null; }
   }
 
   async function loadModels(provider, current) {
@@ -1310,12 +1401,83 @@
     $('#model').disabled = true;
     try {
       const out = await apiSend('/api/model', 'POST', { provider, model });
+      localStorage.setItem('sq-last-model', JSON.stringify({ provider, model }));   // 记住最后使用
       toast(Tf('model.switched', { backend: out.backend, model: out.model }));
     } catch (e) {
       toast(T('model.switchFail') + ': ' + e, true);
       await loadModels(provider, null);
     }
     $('#model').disabled = false;
+  }
+
+  // ── 生长控制（🌱 开关 + openrouter 生成模型下拉；运行时热改，重启回 growth.* 配置值）──
+
+  function paintGrowthToggle() {
+    const tg = $('#growthToggle');
+    tg.classList.toggle('growth-on', state.growthEnabled);
+    tg.title = T(state.growthEnabled ? 'growth.onTitle' : 'growth.offTitle');
+  }
+
+  async function loadGrowth() {
+    const d = await api('/api/growth');
+    $('#growthToggle').style.display = '';
+    $('#growthModel').style.display = '';
+    state.growthEnabled = !!d.enabled;
+    paintGrowthToggle();
+    const sel = $('#growthModel');
+    sel.innerHTML = '';
+    for (const m of (d.models || [])) {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.id + (m.free ? T('model.free') : '');
+      sel.appendChild(o);
+    }
+    if (d.model && ![...sel.options].some(o => o.value === d.model)) {
+      const o = document.createElement('option');
+      o.value = d.model;
+      o.textContent = d.model;
+      sel.appendChild(o);
+    }
+    if (d.model) sel.value = d.model;
+    // 记忆上次最后使用的生成模型（localStorage）：服务端重启回 growth.model 配置值时也默认回显并静默切回
+    const mem = localStorage.getItem('sq-last-growth-model');
+    if (mem && [...sel.options].some(o => o.value === mem)) {
+      sel.value = mem;
+      if (mem !== d.model) {
+        try { await apiSend('/api/growth', 'POST', { model: mem }); } catch (e) { /* 切回失败：下次手选覆盖 */ }
+      }
+    }
+    if (d.source === 'fallback') toast(T('model.fallback'));
+  }
+
+  async function initGrowthBar() {
+    $('#growthToggle').onclick = async () => {
+      try {
+        const out = await apiSend('/api/growth', 'POST', { enabled: !state.growthEnabled });
+        state.growthEnabled = !!out.enabled;
+        paintGrowthToggle();
+        toast(T(out.enabled ? 'growth.switchedOn' : 'growth.switchedOff'));
+      } catch (e) {
+        toast(T('growth.switchFail') + ': ' + e, true);
+      }
+    };
+    $('#growthModel').onchange = async () => {
+      const model = $('#growthModel').value;
+      if (!model) return;
+      $('#growthModel').disabled = true;
+      try {
+        await apiSend('/api/growth', 'POST', { model });
+        localStorage.setItem('sq-last-growth-model', model);   // 记住最后使用
+        toast(Tf('growth.modelSwitched', { model }));
+      } catch (e) {
+        toast(T('growth.switchFail') + ': ' + e, true);
+        try { await loadGrowth(); } catch (ignore) {}
+      }
+      $('#growthModel').disabled = false;
+    };
+    try {
+      await loadGrowth();
+    } catch (e) { /* 老服务无 /api/growth：隐藏生长控件，不影响其他功能 */ }
   }
 
   // ── 控制台（add 落位：单条/批量子模式 / search 检索；批量空行分隔，统一走 addBatch）──
@@ -1427,10 +1589,12 @@
         ? '<div>' + r.leaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
         : '<div class="q-none">' + esc(T(state.mode === 'choice' ? 'add.noLeafChoice' : 'add.noLeafNoul')) + '</div>';
     html += traceHtml(r.steps || []);
+    html += growthHtml(r.growthStep);   // 数据驱动生长卡片：落兜底时树当场长新枝收编本条
     html += '<div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
     $('#q-out').innerHTML = html;
     renderStats(d);
     refreshLeafRows(r.leaves || []);
+    if (r.growthStep && r.growthStep.kept > 0) refreshNode(r.growthStep.parent).catch(() => {});
   }
 
   function renderAddBatch(d) {
@@ -1438,6 +1602,7 @@
     for (const r of (d.results || [])) {
       html += '<div style="margin-bottom:4px"><span class="doc-id">' + esc(r.id) + '</span>' +
           (r.leaves || []).map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>';
+      if (r.growthStep) html += growthHtml(r.growthStep);   // 该条落兜底触发生长：卡片挂在该条行下
     }
     for (const f of (d.failed || [])) {
       html += '<div class="q-step" style="color:#ef7d7d">' + esc(Tf('batch.rowFail', { index: f.index, error: f.error })) + '</div>';
@@ -1446,8 +1611,33 @@
     $('#q-out').innerHTML = html;
     renderStats(d);
     const hitLeaves = new Set();
-    for (const r of (d.results || [])) (r.leaves || []).forEach(l => hitLeaves.add(l));
+    const grownParents = new Set();
+    for (const r of (d.results || [])) {
+      (r.leaves || []).forEach(l => hitLeaves.add(l));
+      if (r.growthStep && r.growthStep.kept > 0) grownParents.add(r.growthStep.parent);
+    }
     refreshLeafRows(hitLeaves);
+    for (const p of grownParents) refreshNode(p).catch(() => {});
+  }
+
+  // 生长卡片：add 落兜底且树当场长了新分支收编本条（growthStep 由服务端在 add/addBatch 里编排生成）
+  function growthHtml(gs) {
+    if (!gs) return '';
+    if (gs.kept > 0) {
+      let html = '<div class="grow-card"><div>' + esc(Tf('growth.card', { n: gs.kept, parent: gs.parent })) +
+          '<span class="grow-gen">' + esc(Tf('growth.gen', { in: gs.genInTokens, out: gs.genOutTokens, ms: gs.genMs })) + '</span></div>';
+      for (const b of (gs.branches || [])) {
+        html += '<div class="grow-branch"><span class="chip">' + esc(b.name) + '</span>' +
+            '<span class="grow-p">P ' + (b.prob != null ? (+b.prob).toFixed(2) : '—') + '</span>' +
+            '<div class="grow-yes">' + esc(b.yes || '') + '</div></div>';
+      }
+      return html + '</div>';
+    }
+    let html = '<div class="grow-card grow-fail">' + esc(T('growth.failed'));
+    if (gs.failed) html += ' <span class="dim">' + esc(Tf('growth.failReason', { reason: gs.failed })) + '</span>';
+    if ((gs.failedBranches || []).length)
+      html += '<span class="dim">' + esc(Tf('growth.rolledBack', { names: gs.failedBranches.join('、') })) + '</span>';
+    return html + '</div>';
   }
 
   function renderQuest(d) {
@@ -1483,6 +1673,7 @@
   route();
   applyI18n();
   initModelBar();
+  initGrowthBar();
 </script>
 </body>
 </html>

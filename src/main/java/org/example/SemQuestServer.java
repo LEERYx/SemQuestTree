@@ -53,6 +53,8 @@ import java.util.concurrent.Executors;
  *   GET  /api/models          → 决策模型列表 ?provider=mock|jev|openrouter|bailian（上游零 token 元数据；
  *                               失败/缺凭据回静态候选；openrouter 置顶补入配置里的决策模型）
  *   GET/POST /api/model       → 当前 provider/model / 热切换 {provider,model}（仅凭据校验，零推理）
+ *   GET/POST /api/growth      → 自我生长开关/生成模型有效值与 openrouter chat 模型清单 /
+ *                               运行时热改 {enabled?, model?}（内存覆盖，零推理，重启回 growth.* 配置值）
  * </pre>
  *
  * <p>多表持久化在 tables/（server.tables，每表一个 &lt;id&gt;.json：{id, name, mode, note, createdAt,
@@ -89,6 +91,7 @@ public final class SemQuestServer {
         Selection sel = new Selection();
         sel.provider = provider;
         sel.model = currentModelOf(cfg, provider);
+        final GrowthState gstate = new GrowthState();   // 生长运行时覆盖（viz 🌱 热改；null 回退 growth.* 配置值）
 
         // 多表装载：tables/*.json 全部零模型调用回放；tables/ 为空且有旧版单树时自动迁移
         ConcurrentHashMap<String, Table> tables = new ConcurrentHashMap<String, Table>();
@@ -148,9 +151,10 @@ public final class SemQuestServer {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/", new StaticHandler(vizFile));
         server.createContext("/api/tables", new TablesHandler(tables, cfg, backend, tablesDir));
-        server.createContext("/api/t/", new TableRouter(tables));
+        server.createContext("/api/t/", new TableRouter(tables, cfg, backend, gstate));
         server.createContext("/api/models", new ModelsHandler(cfg, sel, timeoutMs));
         server.createContext("/api/model", new ModelHandler(cfg, backend, sel));
+        server.createContext("/api/growth", new GrowthHandler(cfg, gstate, timeoutMs));
         server.setExecutor(Executors.newFixedThreadPool(4));
         server.start();
         System.out.println("问义树可视化服务已启动: http://localhost:" + port
@@ -679,9 +683,15 @@ public final class SemQuestServer {
     private static final class TableRouter extends BaseHandler implements HttpHandler {
         private static final String PREFIX = "/api/t/";
         private final ConcurrentHashMap<String, Table> tables;
+        private final Config cfg;               // 生长编排（growth.*）实时读取
+        private final SwitchableBackend backend;
+        private final GrowthState gstate;       // 生长开关/生成模型运行时覆盖（viz 🌱）
 
-        TableRouter(ConcurrentHashMap<String, Table> tables) {
+        TableRouter(ConcurrentHashMap<String, Table> tables, Config cfg, SwitchableBackend backend, GrowthState gstate) {
             this.tables = tables;
+            this.cfg = cfg;
+            this.backend = backend;
+            this.gstate = gstate;
         }
 
         public void handle(HttpExchange ex) throws IOException {
@@ -725,9 +735,11 @@ public final class SemQuestServer {
             } else if ("quest".equals(action)) {
                 new QuestHandler().handle(t, ex);
             } else if ("add".equals(action)) {
-                new AddHandler().handle(t, ex);
+                new AddHandler(cfg, backend, gstate).handle(t, ex);
             } else if ("addBatch".equals(action)) {
-                new AddBatchHandler().handle(t, ex);
+                new AddBatchHandler(cfg, backend, gstate).handle(t, ex);
+            } else if ("doc".equals(action)) {
+                new DocHandler().handle(t, ex);
             } else {
                 json(ex, 404, "{\"error\":" + Json.str("未知动作: " + action) + "}");
             }
@@ -1091,8 +1103,269 @@ public final class SemQuestServer {
         }
     }
 
+    /**
+     * GET  /api/growth → 生长开关/生成模型有效值 + openrouter chat 模型清单（手动 growth.models 优先
+     * > 上游 /api/v1/models 零 token 元数据 > 静态候选；免费款排前，当前生效模型缺席置顶补入）。
+     * POST /api/growth {enabled?, model?} → 运行时热改（内存覆盖，零推理；重启回 growth.* 配置值）。
+     */
+    private static final class GrowthHandler extends BaseHandler implements HttpHandler {
+        private final Config cfg;
+        private final GrowthState gstate;
+        private final int timeoutMs;
+
+        GrowthHandler(Config cfg, GrowthState gstate, int timeoutMs) {
+            this.cfg = cfg;
+            this.gstate = gstate;
+            this.timeoutMs = timeoutMs;
+        }
+
+        public void handle(HttpExchange ex) throws IOException {
+            if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                LinkedHashMap<String, Object> out = stateMap();
+                putModelList(out);
+                json(ex, 200, Json.write(out));
+                return;
+            }
+            if ("POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                try {
+                    Map<String, Object> req = Json.parseObject(readBody(ex));
+                    boolean touched = false;
+                    Object ev = req.get("enabled");
+                    if (ev instanceof Boolean) {
+                        gstate.enabled = (Boolean) ev;
+                        touched = true;
+                        System.out.println("[生长] 开关 → " + ev + "（viz 运行时覆盖，重启回 growth.enabled 配置值）");
+                    }
+                    Object mv0 = req.get("model");   // 可选字段：宽容读取（text() 对缺字段抛异常）
+                    String mv = mv0 instanceof String ? ((String) mv0).trim() : "";
+                    if (!mv.isEmpty()) {
+                        gstate.model = mv;
+                        touched = true;
+                        System.out.println("[生长] 生成模型 → " + mv + "（viz 运行时覆盖，重启回 growth.model 配置值）");
+                    }
+                    if (!touched) {
+                        json(ex, 400, "{\"error\":" + Json.str("缺 enabled / model 字段") + "}");
+                        return;
+                    }
+                    json(ex, 200, Json.write(stateMap()));
+                } catch (IllegalArgumentException e) {
+                    json(ex, 400, "{\"error\":" + Json.str(e.getMessage() == null ? "非法请求" : e.getMessage()) + "}");
+                }
+                return;
+            }
+            ex.sendResponseHeaders(405, -1);
+        }
+
+        /** 生长有效值：viz 运行时覆盖优先，回退 semquest.properties 的 growth.*（热载）。 */
+        private LinkedHashMap<String, Object> stateMap() {
+            LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+            out.put("enabled", Boolean.valueOf(growthEnabledOf(cfg, gstate)));
+            out.put("model", growthModelOf(cfg, gstate));
+            String key = cfg.get("openrouter.apikey", null);
+            out.put("hasKey", Boolean.valueOf(key != null && !key.trim().isEmpty()));
+            return out;
+        }
+
+        /** chat 模型清单挂到 out（growth.models 手动清单优先 > 上游零 token 元数据 > 静态候选）。 */
+        private void putModelList(LinkedHashMap<String, Object> out) {
+            String cur = growthModelOf(cfg, gstate);
+            List<Object> models;
+            String source;
+            String raw = cfg.get("growth.models", "");
+            if (!raw.trim().isEmpty()) {
+                // 手动清单优先生效：不请求上游，改 properties 保存即热载
+                models = new ArrayList<Object>();
+                for (String id : raw.split("[,，]")) {
+                    String v = id.trim();
+                    if (v.isEmpty()) continue;
+                    LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+                    m.put("id", v);
+                    m.put("free", Boolean.valueOf(v.endsWith(":free")));
+                    models.add(m);
+                }
+                source = "config";
+            } else {
+                String key = cfg.get("openrouter.apikey", null);
+                try {
+                    String body = Http.get("https://openrouter.ai/api/v1/models",
+                            key == null || key.trim().isEmpty() ? null : key, Math.min(timeoutMs, 10_000));
+                    models = parseChatModels(body);
+                    if (models.isEmpty()) throw new IOException("上游清单为空");
+                    source = "upstream";
+                } catch (Exception e) {
+                    models = staticGrowthModels(cur);
+                    source = "fallback";
+                }
+            }
+            // 当前生效模型缺席时置顶补入（决策模型清单同款约定）
+            boolean has = false;
+            for (Object o : models) {
+                if (cur.equals(((Map<?, ?>) o).get("id"))) { has = true; break; }
+            }
+            if (!has) {
+                LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+                m.put("id", cur);
+                m.put("free", Boolean.valueOf(cur.endsWith(":free")));
+                models.add(0, m);
+            }
+            out.put("source", source);
+            out.put("models", models);
+        }
+    }
+
+    // ── 数据驱动生长（add/addBatch 落兜底触发） ───────────────────────
+
+    /**
+     * 落兜底同步生长：add 落位全为兜底叶（或空树根叶）→ 树里没有能承接这条内容的类别，
+     * 生成器按本条内容为断路层提出 ≤growth.maxNew 个新分支 → 逐个 growNode 入树（自带存量重判，
+     * 从 GrowReport.moves 查本条是否收编）→ 未收编 undoGrow 原位回滚（不删文档，存量还原原位）；
+     * 任一收编即响应 leaves 换为新枝、记 grown auto（回放零模型）并挂 growthStep。
+     * 全程在表锁内（TableRouter 已 synchronized(t)）；生成模型 mock 判定链路走 MockGenerator（零 token），
+     * 真实链路走 openrouter chat completions（growth.model，凭据复用 openrouter.apikey，
+     * 生成提示词 growth.prompt 可配、空白回内置模板）。失败原因也写进 growthStep。
+     */
+    private static void growOnFallback(Table t, String docId, String content,
+                                        SemQuestTree.AddReport rep, Map<String, Object> out,
+                                        Config cfg, SwitchableBackend backend, GrowthState gstate) throws IOException {
+        if (!growthEnabledOf(cfg, gstate)) return;
+        // 触发判定：落位全为兜底叶，或空树根叶（ROOT 本身是叶 = 还没有任何分支）
+        Map<String, Object> rootLv = t.tree.nodeLevel(null);
+        String rootName = rootLv == null ? null : String.valueOf(rootLv.get("name"));
+        boolean rootIsLeaf = rootLv != null && Boolean.TRUE.equals(rootLv.get("leaf"));
+        String fb = null;        // 触发落位（兜底叶或根叶）
+        String parent = null;    // 断路层（新枝挂靠层）
+        for (String leaf : rep.leaves) {
+            if (leaf.endsWith(SemQuestTree.OTHER_SUFFIX)) {
+                fb = leaf;
+                parent = leaf.substring(0, leaf.length() - SemQuestTree.OTHER_SUFFIX.length());
+            } else if (rootIsLeaf && leaf.equals(rootName)) {
+                fb = leaf;    // 空树根叶：内容落在了还没有分支的 ROOT 上
+                parent = leaf;
+            } else {
+                return;    // 落位里有真实承接叶 → 树里已有这类类别，不生长
+            }
+        }
+        if (fb == null) return;
+        List<String[]> siblings = t.tree.branchView(parent);
+        if (siblings == null) return;
+        int maxBranches = cfg.getInt("growth.maxBranches", 12);
+        if (siblings.size() >= maxBranches) {   // 护栏：层满不长，防炸树
+            growthStep(out, parent, 0, 0, 0, 0, null, null, "该层分支已满（growth.maxBranches=" + maxBranches + "）");
+            return;
+        }
+        // 生成器：mock 判定链路配 MockGenerator（零 token E2E）；真实链路 openrouter chat
+        CriterionGenerator gen;
+        if ("mock".equals(backend.name())) {
+            gen = new CriterionGenerator.MockGenerator();
+        } else {
+            String apiKey = cfg.get("openrouter.apikey", null);
+            if (apiKey == null || apiKey.trim().isEmpty()) {
+                growthStep(out, parent, 0, 0, 0, 0, null, null, "缺 openrouter 凭据，无法生成判据");
+                return;
+            }
+            gen = new CriterionGenerator.OpenRouterGenerator(
+                    cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
+                    growthModelOf(cfg, gstate),
+                    apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null));
+        }
+        CriterionGenerator.GrowthResult g;
+        try {
+            g = gen.generate(parent, siblings, java.util.Collections.singletonList(content),
+                    cfg.getInt("growth.maxNew", 2));
+        } catch (Exception e) {
+            growthStep(out, parent, 0, 0, 0, 0, null, null, "判据生成失败: " + e.getMessage());
+            return;
+        }
+        if (g.branches.isEmpty()) {
+            growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, 0, null, null,
+                    "生成器认为该层无值得生长的区分");
+            return;
+        }
+        // 逐分支验收：growNode 入树（本条在重判存量里）→ 查本条收编与否 → 未收编 undoGrow 原位回滚
+        List<Object> kept = new ArrayList<Object>();
+        List<Object> rolledBack = new ArrayList<Object>();
+        String newLeaf = null;
+        for (String[] b : g.branches) {
+            String name = b[0];
+            SemQuestTree.GrowReport gr;
+            try {
+                gr = t.tree.growNode(parent, name, b[1], null);
+            } catch (Exception e) {
+                continue;   // 撞名/非法名等：跳过该分支
+            }
+            double prob = 0;
+            boolean hit = false;
+            for (SemQuestTree.Move mv : gr.moves) {
+                if (docId.equals(mv.docId)) {   // 本条即触发样本：收编与否看这次重判
+                    hit = mv.moved;
+                    prob = mv.prob;
+                    break;
+                }
+            }
+            if (hit) {
+                LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
+                rec.put("parent", parent);
+                rec.put("name", name);
+                rec.put("yes", b[1]);
+                rec.put("no", "");
+                rec.put("auto", Boolean.TRUE);   // 生长来源标记：回放时零模型恢复，viz 可识别为自动长出
+                t.grown.add(rec);
+                LinkedHashMap<String, Object> br = new LinkedHashMap<String, Object>();
+                br.put("name", name);
+                br.put("yes", b[1]);
+                br.put("prob", prob);
+                kept.add(br);
+                newLeaf = name;
+                persistTable(t);
+                break;   // 本条已收编：余下候选不再入树，免无效重判开销
+            }
+            try {
+                t.tree.undoGrow(parent, name);
+            } catch (Exception ignore) {
+                // 回滚失败极罕见（节点刚加进去）：留待人工清理
+            }
+            rolledBack.add(name);
+        }
+        if (newLeaf != null) {
+            List<Object> lv = new ArrayList<Object>(rep.leaves);
+            lv.remove(fb);
+            lv.add(newLeaf);
+            out.put("leaves", lv);   // 本条已收编进新枝：响应落位换成新枝
+            growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, kept.size(), kept, null, null);
+        } else {
+            growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, 0, null, rolledBack,
+                    "验收未过：本条内容未收编进任何新枝，已全部回滚");
+        }
+    }
+
+    /** growthStep 组装进 out：branches=验收保留的新枝明细；failedBranches=已回滚的分支名；failed=放弃原因。 */
+    private static void growthStep(Map<String, Object> out, String parent,
+                                   int inTok, int outTok, long ms, int keptCount,
+                                   List<Object> kept, List<Object> failedBranches, String failed) {
+        LinkedHashMap<String, Object> gs = new LinkedHashMap<String, Object>();
+        gs.put("parent", parent);
+        gs.put("genTokens", inTok + outTok);
+        gs.put("genInTokens", inTok);
+        gs.put("genOutTokens", outTok);
+        gs.put("genMs", ms);
+        gs.put("kept", keptCount);
+        if (kept != null) gs.put("branches", kept);
+        if (failedBranches != null) gs.put("failedBranches", failedBranches);
+        if (failed != null) gs.put("failed", failed);
+        out.put("growthStep", gs);
+    }
+
     /** POST /api/t/&lt;id&gt;/add {content, id?} → 一条语料按判据下行落叶；id 缺省自动生成，落位随快照落盘。 */
     private static final class AddHandler extends BaseHandler {
+        private final Config cfg;
+        private final SwitchableBackend backend;
+        private final GrowthState gstate;
+
+        AddHandler(Config cfg, SwitchableBackend backend, GrowthState gstate) {
+            this.cfg = cfg;
+            this.backend = backend;
+            this.gstate = gstate;
+        }
 
         void handle(Table t, HttpExchange ex) throws IOException {
             if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
@@ -1120,7 +1393,10 @@ public final class SemQuestServer {
                 out.put("id", id);
                 out.put("leaves", new ArrayList<Object>(rep.leaves));
                 out.put("steps", stepsJson(rep.steps));
-                out.put("stats", t.tree.statsLine());
+                // 数据驱动生长：落位全为兜底叶（或空树根叶）→ 树里没有能承接这条内容的类别，
+                // 同步生成判据长新枝并收编本条（成功后 out.leaves 换为新枝、挂 growthStep）
+                growOnFallback(t, id, ((String) cv).trim(), rep, out, cfg, backend, gstate);
+                out.put("stats", t.tree.statsLine());   // stats 后置：含生长重判与生成器的 token
                 persistTable(t);
                 json(ex, 200, Json.write(out));
             } catch (IOException e) {
@@ -1137,6 +1413,15 @@ public final class SemQuestServer {
      * 逐条落位互不牵连（单条失败记入 failed 继续），全部结束后统一落盘一次。
      */
     private static final class AddBatchHandler extends BaseHandler {
+        private final Config cfg;
+        private final SwitchableBackend backend;
+        private final GrowthState gstate;
+
+        AddBatchHandler(Config cfg, SwitchableBackend backend, GrowthState gstate) {
+            this.cfg = cfg;
+            this.backend = backend;
+            this.gstate = gstate;
+        }
 
         @SuppressWarnings("unchecked")
         void handle(Table t, HttpExchange ex) throws IOException {
@@ -1189,6 +1474,8 @@ public final class SemQuestServer {
                     r.put("id", id);
                     r.put("leaves", new ArrayList<Object>(rep.leaves));
                     r.put("steps", stepsJson(rep.steps));
+                    // 数据驱动生长：本条落位全为兜底叶（或空树根叶）→ 同步长新枝并收编（成功后本条 leaves 换新枝）
+                    growOnFallback(t, id, ((String) cv).trim(), rep, r, cfg, backend, gstate);
                     results.add(r);
                     added++;
                 } catch (IOException e) {
@@ -1214,7 +1501,34 @@ public final class SemQuestServer {
         }
     }
 
-    /** POST /api/t/&lt;id&gt;/quest {query} → 自然语言检索（走当前后端逐层判定）。 */
+    /** DELETE /api/t/&lt;id&gt;/doc?name=X → 删除一条落位（零模型调用）：从全部落位叶上摘下并移出索引；未知 id 400。 */
+    private static final class DocHandler extends BaseHandler {
+
+        void handle(Table t, HttpExchange ex) throws IOException {
+            if (!"DELETE".equalsIgnoreCase(ex.getRequestMethod())) {
+                ex.sendResponseHeaders(405, -1);
+                return;
+            }
+            String name = param(ex, "name");
+            if (name == null || name.trim().isEmpty()) {
+                json(ex, 400, "{\"error\":" + Json.str("缺 name 参数（文档 id）") + "}");
+                return;
+            }
+            try {
+                List<String> removedLeaves = t.tree.removeDoc(name.trim());
+                LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>(t.tree.metaMap());
+                out.put("id", name.trim());
+                out.put("removedLeaves", removedLeaves);
+                out.put("stats", t.tree.statsLine());
+                persistTable(t);
+                json(ex, 200, Json.write(out));
+            } catch (IllegalArgumentException e) {
+                json(ex, 400, "{\"error\":" + Json.str(e.getMessage()) + "}");
+            }
+        }
+    }
+
+    /** POST /api/t/&lt;id&gt;/quest {query} → 自然语言检索（纯读：按现有结构下行，查不到就是查不到）。 */
     private static final class QuestHandler extends BaseHandler {
 
         void handle(Table t, HttpExchange ex) throws IOException {
@@ -1244,7 +1558,9 @@ public final class SemQuestServer {
             }
             try {
                 SemQuestTree.QuestReport rep = t.tree.quest(query);
-                json(ex, 200, Json.write(questMap(t.tree, rep)));
+                Map<String, Object> out = questMap(t.tree, rep);
+                // 纯读：检索只按现有结构下行，查不到就是查不到——不为查询改树（生长在 add/addBatch 触发）
+                json(ex, 200, Json.write(out));
             } catch (IOException e) {
                 json(ex, 500, "{\"error\":" + Json.str("查询判定失败: " + e.getMessage()) + "}");
             }
@@ -1286,6 +1602,24 @@ public final class SemQuestServer {
     private static final class Selection {
         volatile String provider;
         volatile String model;
+    }
+
+    /** 生长运行时覆盖（viz 🌱 开关与生成模型下拉，volatile 热改）：null = 未覆盖，回退 growth.* 配置值。 */
+    private static final class GrowthState {
+        volatile Boolean enabled;
+        volatile String model;
+    }
+
+    /** 生长开关有效值：viz 运行时覆盖优先，回退 growth.enabled 配置（热载）。 */
+    private static boolean growthEnabledOf(Config cfg, GrowthState g) {
+        if (g.enabled != null) return g.enabled.booleanValue();
+        return "true".equalsIgnoreCase(cfg.get("growth.enabled", "false"));
+    }
+
+    /** 生长生成模型有效值：viz 运行时覆盖优先，回退 growth.model 配置（热载）。 */
+    private static String growthModelOf(Config cfg, GrowthState g) {
+        if (g.model != null && !g.model.trim().isEmpty()) return g.model;
+        return cfg.get("growth.model", "xingchen-agi/xing4.0-29b-a4b:free");
     }
 
     /** provider 别名归一：mammoth → openrouter（OpenRouterBackend 类更名后的旧称兼容）。 */
@@ -1377,6 +1711,60 @@ public final class SemQuestServer {
         m.put("id", id);
         m.put("decisions", Boolean.TRUE);
         return m;
+    }
+
+    /** openrouter /api/v1/models → chat 模型条目 {id, name, free}（免费款排前，组内按 id 字母序）。 */
+    private static List<Object> parseChatModels(String body) throws IOException {
+        Map<String, Object> m = Json.parseObject(body);
+        if (!(m.get("data") instanceof List)) throw new IOException("上游响应无 data 字段");
+        List<Object[]> rows = new ArrayList<Object[]>();   // {free, id, name}
+        for (Object o : (List<?>) m.get("data")) {
+            if (!(o instanceof Map)) continue;
+            Map<?, ?> e = (Map<?, ?>) o;
+            boolean free = false;
+            Object pr = e.get("pricing");
+            if (pr instanceof Map) {
+                Object p = ((Map<?, ?>) pr).get("prompt");
+                Object c = ((Map<?, ?>) pr).get("completion");
+                free = "0".equals(String.valueOf(p)) && "0".equals(String.valueOf(c));
+            }
+            rows.add(new Object[]{Boolean.valueOf(free), String.valueOf(e.get("id")), e.get("name")});
+        }
+        Collections.sort(rows, new Comparator<Object[]>() {
+            public int compare(Object[] a, Object[] b) {
+                boolean fa = (Boolean) a[0], fb = (Boolean) b[0];
+                if (fa != fb) return fa ? -1 : 1;   // 免费款排前
+                return ((String) a[1]).compareTo((String) b[1]);
+            }
+        });
+        List<Object> out = new ArrayList<Object>();
+        for (Object[] r : rows) {
+            LinkedHashMap<String, Object> em = new LinkedHashMap<String, Object>();
+            em.put("id", r[1]);
+            em.put("name", r[2]);
+            em.put("free", r[0]);
+            out.add(em);
+        }
+        return out;
+    }
+
+    /** 生长生成模型静态兜底清单（上游不可达/缺凭据时）：当前生效模型置顶，`:free` 款自动标免费。 */
+    private static List<Object> staticGrowthModels(String current) {
+        java.util.Set<String> ids = new java.util.LinkedHashSet<String>();
+        ids.add(current);
+        String[] fallback = {
+                "meta-llama/llama-3.3-70b-instruct:free", "deepseek/deepseek-chat-v3.1:free",
+                "google/gemma-3-27b-it:free", "qwen/qwen3-coder:free",
+        };
+        for (String id : fallback) ids.add(id);
+        List<Object> out = new ArrayList<Object>();
+        for (String id : ids) {
+            LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("id", id);
+            m.put("free", Boolean.valueOf(id.endsWith(":free")));
+            out.add(m);
+        }
+        return out;
     }
 
     /** 判定轨迹步骤 → JSON（choice 模式额外带胜出选项与置信度）。 */
