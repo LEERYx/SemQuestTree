@@ -1222,7 +1222,8 @@ public final class SemQuestServer {
      * 任一收编即响应 leaves 换为新枝、记 grown auto（回放零模型）并挂 growthStep。
      * 全程在表锁内（TableRouter 已 synchronized(t)）；生成模型 mock 判定链路走 MockGenerator（零 token），
      * 真实链路走 openrouter chat completions（growth.model，凭据复用 openrouter.apikey，
-     * 生成提示词 growth.prompt 可配、空白回内置模板）。失败原因也写进 growthStep。
+     * 生成提示词 growth.prompt 可配、空白回内置模板；growth.maxTokens / growth.thinking 限住思考型模型的输出量，
+     * 把本步的墙钟耗时从几十秒压到几秒）。失败原因也写进 growthStep。
      */
     private static void growOnFallback(Table t, String docId, String content,
                                         SemQuestTree.AddReport rep, Map<String, Object> out,
@@ -1266,7 +1267,8 @@ public final class SemQuestServer {
             gen = new CriterionGenerator.OpenRouterGenerator(
                     cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
                     growthModelOf(cfg, gstate),
-                    apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null));
+                    apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
+                    cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null));
         }
         CriterionGenerator.GrowthResult g;
         try {

@@ -38,6 +38,13 @@ growth.models=
 growth.maxBranches=12
 # 单次生长最多提出的新分支数；热载
 growth.maxNew=2
+# 生成提速护栏（均热载；不配 = 请求体不带该字段，行为与旧版逐字一致）：落兜底那一次生成占 add 总耗时九成以上，
+# 而耗时几乎正比于输出 token 数——思考型模型的思维链常占输出九成（实测 qwen3.7-flash 出 3066 token / 38.6s）。
+# growth.maxTokens：单次生成输出上限（含思维链），0/留空 = 不发；被截断时 growthStep.failed 会提示调大。
+# growth.thinking：OpenRouter 统一推理力度 none/low/medium/high，留空 = 不发（沿用模型默认）。
+# 实测取向：none 只出 JSON 正文，约 3~6s；low 判据更厚，约 8~13s。
+#growth.thinking=none
+#growth.maxTokens=1024
 # 生成提示词模板（可选，留空 = 内置默认；热载）
 # 占位符：{parent}=层节点名、{siblings}=现有分支清单、{count}/{samples}=落兜底内容、{maxNew}=上限
 #growth.prompt=
