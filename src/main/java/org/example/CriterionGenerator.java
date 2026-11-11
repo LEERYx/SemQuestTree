@@ -12,9 +12,10 @@ import java.util.Map;
  * <p>实现两个：
  * <ul>
  *   <li>{@link OpenRouterGenerator}——openrouter chat completions 端点（通用生成模型；
- *       凭据复用 openrouter.apikey，模型经 growth.model 配置，落兜底生长提示词经 growth.prompt 配置
- *       （空白回 DEFAULT_PROMPT），节点延伸提示词经 growth.extend.prompt 配置（空白回 DEFAULT_EXTEND_PROMPT，
- *       层级无关——不写死「第几层」，只约束「比父节点细一层」，任意深度可递复用）；
+ *       凭据复用 openrouter.apikey，模型经 growth.model 配置，落兜底生长提示词经 growth.prompt 配置、
+ *       节点延伸提示词经 growth.extend.prompt 配置——两者值均为提示词文件路径（构造时读取，文件内容即模板，
+ *       层级无关——不写死「第几层」，只约束「比父节点细一层」，任意深度可递复用；缺失/空白即抛错，
+ *       由生长编排记入 growthStep.failed）；
  *       免费模型即零成本生长；思考型模型可用 growth.maxTokens 限输出、growth.thinking 控推理力度，
  *       落兜底那一次生成从几十秒降到几秒）
  *   <li>{@link MockGenerator}——零 token 确定性生成（mock 判定沙箱与 E2E 用）：
@@ -24,37 +25,6 @@ import java.util.Map;
  * <p>生成只是建议：server 侧会在 growNode 的存量重判里查本条是否收编做验收，收编不了当场回滚，分支不会留在树里。
  */
 public interface CriterionGenerator {
-
-    /**
-     * 生成提示词内置模板（growth.prompt 可覆盖；空白回此默认）。
-     * 占位符：{parent}={层节点名}、{siblings}={现有分支清单行}、{count}/{samples}={落兜底内容行}、{maxNew}={上限}。
-     */
-    String DEFAULT_PROMPT = "你在维护一棵判据树（用自然语言判据给内容分类）。层「{parent}」现有分支：\n"
-            + "{siblings}"
-            + "以下 {count} 条内容落入了兜底（现有分支都不覆盖）：\n"
-            + "{samples}"
-            + "提出至多 {maxNew} 个新分支让这类内容有家可归。要求：\n"
-            + "- 名字是一个类别词（不超过 6 个字）；yes 写这个类别的含义——它覆盖哪些主题或维度，用名词短语列举（示例：类别「职业身份」的 yes 写「工作地域，工作内容」这样的含义列举，不要写成「内容聚焦于……」那种描述什么话会进来的句子）；\n"
-            + "- 含义须与现有分支互斥不重叠；若现有分支已能覆盖这些内容，branches 返回空数组。\n"
-            + "只输出 JSON 对象：{\"branches\":[{\"name\":\"…\",\"yes\":\"…\"}]}";
-
-    /**
-     * 延伸生成内置模板（growth.extend.prompt 可覆盖；空白回此默认）。层级无关：不写死「第几层」，
-     * 只约束「比父节点细一层」——对任意深度的拥挤节点（2、3、4…层）同一模板递复用。
-     * 占位符：{parent}={节点名}、{parentYes}={该节点判据（子类公共上限）}、{count}={存量条数}、
-     * {siblings}={现有子分支清单行（串行闭环每轮最新）}、{samples}={存量样本行（内容概述）}。
-     */
-    String DEFAULT_EXTEND_PROMPT = "你在维护一棵判据树（用自然语言判据给内容分类）。节点「{parent}」（含义：{parentYes}）下已积累 {count} 条内容，太拥挤了，需要向下延伸出更细的子类。\n"
-            + "\n它现有的子分支（可能为空，已互斥不重叠）：\n"
-            + "{siblings}"
-            + "\n该节点下的内容样本：\n"
-            + "{samples}"
-            + "提出 1 个新子分支，把这批内容进一步细分。要求：\n"
-            + "- 子类比「{parent}」细一层：{parentYes} 是它们的公共上限，子类只覆盖其中一块——不能与父类同粒度，也不能与现有子分支重叠；\n"
-            + "- 优先挑内容样本里占比最大、内部又相似的一簇，让最多的内容有子类可归；\n"
-            + "- 名字是一个类别词（不超过 6 个字）；yes 写这个子类的含义——它在父类基础上再往哪个具体方向收，用名词短语列举（示例：父类「职业身份」含义「工作地域，工作内容」，其子类「技术研发」的 yes 写「工程师，架构师，算法研究员」这样更细的岗位列举，不要写成「内容聚焦于……」那种句子）；\n"
-            + "- 若现有子分支已能覆盖这些内容，或内容之间找不到更细的共同侧面，branches 返回空数组。\n"
-            + "只输出 JSON 对象：{\"branches\":[{\"name\":\"…\",\"yes\":\"…\"}]}";
 
     /** 一次生成的产物与账单：branches 为空 = 生成方认为无值得生长的区分。 */
     final class GrowthResult {
@@ -87,21 +57,20 @@ public interface CriterionGenerator {
         private final String model;
         private final String apiKey;
         private final int timeoutMs;
-        private final String promptTemplate;   // growth.prompt 配置（空白回 DEFAULT_PROMPT）
-        private final String extendTemplate;   // growth.extend.prompt 配置（空白回 DEFAULT_EXTEND_PROMPT）
+        private final String promptTemplate;   // growth.prompt 提示词文件内容（构造时读取）
+        private final String extendTemplate;   // growth.extend.prompt 提示词文件内容（构造时读取）
         private final int maxTokens;           // growth.maxTokens（<=0 = 不发 max_tokens，沿用模型默认）
         private final String thinking;         // growth.thinking（none/low/medium/high；空白 = 不发 reasoning）
 
-        public OpenRouterGenerator(String url, String model, String apiKey, int timeoutMs, String promptTemplate,
-                                   int maxTokens, String thinking, String extendPrompt) {
+        public OpenRouterGenerator(String url, String model, String apiKey, int timeoutMs, String promptPath,
+                                   int maxTokens, String thinking, String extendPath) {
             this.url = url;
             this.model = model;
             this.apiKey = apiKey;
             this.timeoutMs = timeoutMs;
-            this.promptTemplate = promptTemplate != null && !promptTemplate.trim().isEmpty()
-                    ? promptTemplate.trim() : DEFAULT_PROMPT;
-            this.extendTemplate = extendPrompt != null && !extendPrompt.trim().isEmpty()
-                    ? extendPrompt.trim() : DEFAULT_EXTEND_PROMPT;
+            // 提示词正文全部来自提示词文件（代码零内置模板、零默认回退）：growth.prompt / growth.extend.prompt = 文件路径
+            this.promptTemplate = PromptLoader.read("growth.prompt", promptPath);
+            this.extendTemplate = PromptLoader.read("growth.extend.prompt", extendPath);
             this.maxTokens = maxTokens;
             this.thinking = thinking != null && !thinking.trim().isEmpty() ? thinking.trim() : null;
         }

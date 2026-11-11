@@ -107,6 +107,13 @@ public final class SemQuestServer {
         sel.model = currentModelOf(cfg, provider);
         final GrowthState gstate = new GrowthState();   // 生长运行时覆盖（viz 🌱 热改；null 回退 growth.* 配置值）
 
+        // 判定提示词装载（最早时机 fail-fast）：全部来自 prompt.* 键指向的提示词文件（PromptLoader 严格装载——
+        // 路径未配置/文件不可读/内容空白即启动失败，代码零内置文本零默认回退），热载见 watcher；
+        // 先于表装载——提示词不完备就不该发生任何表迁移/回放副作用
+        final SemQuestTree.Prompts promptsInit = promptsOrFail(cfg);
+        final String ruleAddInit = ruleOrFail(cfg, "prompt.rule.add");       // 树级规则建表默认值（提示词文件内容）
+        final String ruleSearchInit = ruleOrFail(cfg, "prompt.rule.search");
+
         // 多表装载：tables/*.json 全部零模型调用回放；tables/ 为空且有旧版单树时自动迁移
         ConcurrentHashMap<String, Table> tables = new ConcurrentHashMap<String, Table>();
         loadTables(tables, tablesDir, backend);
@@ -142,23 +149,10 @@ public final class SemQuestServer {
                 t.tree.setQuestCacheCap(qcInit);
             }
         }
-        // 判定提示词同上铺初始值（prompt.*，热载见 watcher）
-        final SemQuestTree.Prompts promptsInit = promptsOf(cfg);
+        // 判定提示词铺到全部表（装载已在上文 fail-fast 完成）
         for (Table t : tables.values()) {
             synchronized (t) {
                 t.tree.setPrompts(promptsInit);
-            }
-        }
-        // 树级规则建表默认值取自 prompt.rule.*；启动时把仍带代码默认文本的旧表置换为配置值（自定义文本不动，置换落盘）
-        final String ruleAddInit = ruleOf(cfg, "prompt.rule.add", SemQuestTree.DEFAULT_RULE_ADD);
-        final String ruleSearchInit = ruleOf(cfg, "prompt.rule.search", SemQuestTree.DEFAULT_RULE_SEARCH);
-        for (Table t : tables.values()) {
-            synchronized (t) {
-                if (t.tree.swapDefaultRules(SemQuestTree.DEFAULT_RULE_ADD, ruleAddInit,
-                        SemQuestTree.DEFAULT_RULE_SEARCH, ruleSearchInit)) {
-                    persistTable(t);
-                    System.out.println("[启动] 表「" + t.name + "」树级规则已按 prompt.rule.* 置换");
-                }
             }
         }
 
@@ -181,8 +175,8 @@ public final class SemQuestServer {
         // 不热载（重启生效）：server.port / server.data / server.viz / server.tables、schema、backend 首选。
         final Path cfgPath = Paths.get(System.getProperty("semquest.config", Config.DEFAULT_FILE));
         final long[] lastMtime = { cfgPath.toFile().lastModified() };
-        final SemQuestTree.Prompts[] lastPrompts = { null };
-        final String[] lastRules = { ruleAddInit, ruleSearchInit };   // 上次应用的 prompt.rule.* 值（启动铺底时已置换旧默认表）
+        final SemQuestTree.Prompts[] lastPrompts = { promptsInit };   // 上次应用的判定提示词（热载变化检测）
+        final String[] lastRules = { ruleAddInit, ruleSearchInit };   // 上次应用的 prompt.rule.* 提示词文件内容
         Thread watcher = new Thread(new Runnable() {
             public void run() {
                 while (true) {
@@ -226,19 +220,26 @@ public final class SemQuestServer {
                             System.out.println("[热载] 表「" + t.name + "」查询缓存容量 → "
                                     + (qc == 0 ? "关闭" : qc));
                         }
-                        SemQuestTree.Prompts np = promptsOf(cfg);
-                        if (!np.equals(lastPrompts[0])) {
+                        // 提示词热载：全部来自提示词文件；装载失败（路径未配置/文件不可读/空白）即保留旧值
+                        SemQuestTree.Prompts np = null;
+                        String nra = null, nrs = null;
+                        try {
+                            np = PromptLoader.of(cfg);
+                            nra = PromptLoader.rule(cfg, "prompt.rule.add");
+                            nrs = PromptLoader.rule(cfg, "prompt.rule.search");
+                        } catch (IllegalStateException e) {
+                            System.out.println("[热载] 提示词装载失败，保留旧值: " + e.getMessage());
+                        }
+                        if (np != null && !np.equals(lastPrompts[0])) {
                             for (Table t : tables.values()) {
                                 synchronized (t) {
                                     t.tree.setPrompts(np);
                                 }
                             }
-                            System.out.println("[热载] 判定提示词已更新（prompt.noul.* instructions/criterion / prompt.choice.* 问句与兜底文案）");
+                            System.out.println("[热载] 判定提示词已更新（prompt.* 键指向的提示词文件内容）");
+                            lastPrompts[0] = np;
                         }
-                        lastPrompts[0] = np;
-                        String nra = ruleOf(cfg, "prompt.rule.add", SemQuestTree.DEFAULT_RULE_ADD);
-                        String nrs = ruleOf(cfg, "prompt.rule.search", SemQuestTree.DEFAULT_RULE_SEARCH);
-                        if (!nra.equals(lastRules[0]) || !nrs.equals(lastRules[1])) {
+                        if (nra != null && nrs != null && (!nra.equals(lastRules[0]) || !nrs.equals(lastRules[1]))) {
                             for (Table t : tables.values()) {
                                 synchronized (t) {
                                     // 仅置换规则仍等于上次应用文本的表（自定义过的树不动）；置换落盘
@@ -273,31 +274,27 @@ public final class SemQuestServer {
 
     // ── 多表持久化 ──────────────────────────────────────────────────
 
-    /** semquest.properties → 判定提示词（prompt.*，空值回内置默认）。
-     *  3 个可选分野键（noul.search.instructions、choice.search.{root,node}）缺省/留空即继承 add 侧同键。 */
-    private static SemQuestTree.Prompts promptsOf(Config cfg) {
-        String noulAdd = cfg.get("prompt.noul.add.instructions", null);
-        String choiceRoot = cfg.get("prompt.choice.add.root", null);
-        String choiceNode = cfg.get("prompt.choice.add.node", null);
-        String noulSearch = cfg.get("prompt.noul.search.instructions", null);
-        String searchRoot = cfg.get("prompt.choice.search.root", null);
-        String searchNode = cfg.get("prompt.choice.search.node", null);
-        return new SemQuestTree.Prompts(
-                noulAdd,
-                noulSearch != null ? noulSearch : noulAdd,
-                cfg.get("prompt.noul.search.criterion", null),
-                cfg.get("prompt.noul.add.criterion", null),
-                cfg.get("prompt.noul.search.query", null),
-                choiceRoot, choiceNode,
-                searchRoot != null ? searchRoot : choiceRoot,
-                searchNode != null ? searchNode : choiceNode,
-                cfg.get("prompt.choice.other", null));
+    /** 启动 fail-fast 装载判定提示词：prompt.* 键指向的提示词文件经 PromptLoader 严格装载，
+     *  路径未配置/不可读/空白即打印并退出（代码零内置文本，不给默认值兜底）。 */
+    private static SemQuestTree.Prompts promptsOrFail(Config cfg) {
+        try {
+            return PromptLoader.of(cfg);
+        } catch (IllegalStateException e) {
+            System.err.println("[启动失败] " + e.getMessage());
+            System.exit(1);
+            throw e;   // 不可达：使编译器认可返回值 definite assignment
+        }
     }
 
-    /** 配置字符串键：空白回默认值（规则键 prompt.rule.* 用，缺省 = 代码内置默认文本）。 */
-    private static String ruleOf(Config cfg, String key, String def) {
-        String v = cfg.get(key, null);
-        return v == null || v.trim().isEmpty() ? def : v.trim();
+    /** 启动 fail-fast 装载树级规则（prompt.rule.* 提示词文件内容），语义同 {@link #promptsOrFail}。 */
+    private static String ruleOrFail(Config cfg, String key) {
+        try {
+            return PromptLoader.rule(cfg, key);
+        } catch (IllegalStateException e) {
+            System.err.println("[启动失败] " + e.getMessage());
+            System.exit(1);
+            throw e;
+        }
     }
 
     /** 一张表 = 一棵树：内存态 + 磁盘文件（tables/&lt;id&gt;.json）+ 增长/修改回放记录。 */
@@ -660,10 +657,10 @@ public final class SemQuestServer {
                     String id = newId(tablesDir);
                     SemQuestTree tree = SemQuestTree.createEmpty(backend, "choice".equals(mode),
                             cfg.getDouble("noulGate", 0.7), cfg.getDouble("choiceGate", 0.6),
-                            ruleOf(cfg, "prompt.rule.add", SemQuestTree.DEFAULT_RULE_ADD),
-                            ruleOf(cfg, "prompt.rule.search", SemQuestTree.DEFAULT_RULE_SEARCH));
+                            PromptLoader.rule(cfg, "prompt.rule.add"),
+                            PromptLoader.rule(cfg, "prompt.rule.search"));
                     tree.setQuestCacheCap(Math.max(0, cfg.getInt("questCacheSize", 256)));
-                    tree.setPrompts(promptsOf(cfg));
+                    tree.setPrompts(PromptLoader.of(cfg));
                     Table t = new Table(id, name, note, System.currentTimeMillis(), false, tree,
                             tablesDir.resolve(id + ".json"),
                             new ArrayList<Map<String, Object>>(), new ArrayList<Map<String, Object>>());
@@ -671,7 +668,7 @@ public final class SemQuestServer {
                     tables.put(id, t);
                     System.out.println("[建表] 「" + name + "」(" + mode + ") → " + t.file.getFileName());
                     json(ex, 200, Json.write(tableMeta(t)));
-                } catch (IllegalArgumentException e) {
+                } catch (IllegalArgumentException | IllegalStateException e) {
                     json(ex, 400, "{\"error\":" + Json.str(e.getMessage() == null ? "非法请求" : e.getMessage()) + "}");
                 }
                 return;
@@ -1279,7 +1276,8 @@ public final class SemQuestServer {
      * 任一收编即响应 leaves 换为新枝、记 grown auto（回放零模型）并挂 growthStep。
      * 全程在表锁内（TableRouter 已 synchronized(t)）；生成模型 mock 判定链路走 MockGenerator（零 token），
      * 真实链路走 openrouter chat completions（growth.model，凭据复用 openrouter.apikey，
-     * 生成提示词 growth.prompt 可配、空白回内置模板；growth.maxTokens / growth.thinking 限住思考型模型的输出量，
+     * 生成提示词经 growth.prompt 键指向的提示词文件（构造时读取，缺失/空白记 growthStep.failed）；
+     * growth.maxTokens / growth.thinking 限住思考型模型的输出量，
      * 把本步的墙钟耗时从几十秒压到几秒）。失败原因也写进 growthStep。
      */
     private static void growOnFallback(Table t, String docId, String content,
@@ -1321,11 +1319,17 @@ public final class SemQuestServer {
                 growthStep(out, parent, 0, 0, 0, 0, null, null, "缺 openrouter 凭据，无法生成判据");
                 return;
             }
-            gen = new CriterionGenerator.OpenRouterGenerator(
-                    cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
-                    growthModelOf(cfg, gstate),
-                    apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
-                    cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null), null);
+            try {
+                gen = new CriterionGenerator.OpenRouterGenerator(
+                        cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
+                        growthModelOf(cfg, gstate),
+                        apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
+                        cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null), null);
+            } catch (IllegalStateException e) {
+                // 提示词文件装载失败：不外抛，记入 growthStep.failed（与生成失败同路径）
+                growthStep(out, parent, 0, 0, 0, 0, null, null, "生长提示词装载失败: " + e.getMessage());
+                return;
+            }
         }
         CriterionGenerator.GrowthResult g;
         try {
@@ -1421,7 +1425,8 @@ public final class SemQuestServer {
         return growthEnabledOf(cfg, gstate) && "true".equalsIgnoreCase(cfg.get("growth.extend", "true"));
     }
 
-    /** 延伸生成器：mock 判定链路走 MockGenerator（零 token）；真实链路 openrouter chat（growth.extend.prompt 模板，空白回内置；缺凭据回 null）。 */
+    /** 延伸生成器：mock 判定链路走 MockGenerator（零 token）；真实链路 openrouter chat——
+     *  growth.extend.prompt 键指向的提示词文件构造时读取（缺失/空白即抛错，由 extendTask 记入任务状态）；缺凭据回 null。 */
     private static CriterionGenerator buildExtendGenerator(Config cfg, SwitchableBackend backend, GrowthState gstate) {
         if ("mock".equals(backend.name())) return new CriterionGenerator.MockGenerator();
         String apiKey = cfg.get("openrouter.apikey", null);
@@ -1563,13 +1568,12 @@ public final class SemQuestServer {
                     persistTable(t);
                 }
                 st.round = rounds + 1;
-                String no = NoulSpec.autoNo(b[1]);
                 int movedThis = 0, judged = 0;
                 for (String[] d : plan.affected) {
                     st.current = "存量重判 " + judged + "/" + plan.affected.size();
                     double prob;
                     try {
-                        prob = t.tree.judgeOne(d[1], b[0], b[1], no, plan.rule);   // 锁外调模型
+                        prob = t.tree.judgeOne(d[1], b[0], b[1], null, plan.rule);   // 锁外调模型；no=null 由提示词模板自动生成
                     } catch (IOException e) {
                         judged++;   // 单条判定失败视作不过门：留在原位
                         continue;

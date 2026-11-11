@@ -101,9 +101,9 @@ java -cp target/classes org.example.SemQuestClient http://localhost:8790   # 指
 | `backend` | mock \| jev \| openrouter \| bailian（jev 缺 key 自动回退 openrouter，再缺落到 mock；mock 恒可用零凭据） |
 | `noulGate` | noul 门控，默认 0.7（新建 noul 表的初始值；表内右上角可按表调整） |
 | `choiceGate` | choice 采纳线，默认 0.6（新建 choice 表的初始值；表内右上角可按表调整） |
-| `prompt.*` | 判定提示词（系统侧组装文案），add（落位）与 search（检索）各一套：`prompt.rule.add` / `prompt.rule.search`（state 规则；新表默认值——热载只置换规则仍等于上次默认文本的表，已自定义的不动）、`prompt.noul.add.instructions`（{name}=分支名）、`prompt.noul.search.criterion`（{yes}=判据原文、{name}=分支名；判定前对判据文本套检索框架，让「所有悲伤的话」这类泛查询能过机制描述型判据——落位侧恒等 `{yes}` 写死，无配置键）、`prompt.noul.search.query`（{query}=查询原文；检索请求也包上角色框架，给判据框架里的「该查询」提供指代源，元描述查询不被当成内容本身判定，默认「用户想检索：{query}」，配 `{query}` 恒等退回）、`prompt.choice.add.root` / `prompt.choice.add.node`（{node}=层节点名，ROOT 层用 root 键）、`prompt.choice.other`（兜底选项描述）；可选分野键 `prompt.noul.search.instructions` / `prompt.choice.search.root` / `prompt.choice.search.node` 缺省或留空即继承 add 侧同键；删行或留空回内置默认 |
+| `prompt.*` | 判定提示词（系统侧组装文案），键值=提示词文件路径（`prompts/` 目录一文件一提示词，UTF-8 纯文本；相对进程工作目录或绝对路径），add（落位）与 search（检索）各一套，全部必配——键值缺失 / 文件不可读 / 内容空白 → 服务启动失败（代码零内置文本，不给任何默认回退）：`prompt.rule.add` / `prompt.rule.search`（state 规则；新表默认值——热载只置换规则仍等于上次应用文本的表，已自定义的不动）、`prompt.noul.add.instructions` / `prompt.noul.search.instructions`（{name}=分支名；后者可选，未配置继承 add 侧）、`prompt.noul.add.criterion`（落位判据包裹——判据=类别含义转成判定任务；choice 落位不套用）/ `prompt.noul.search.criterion`（{yes}=判据原文、{name}=分支名；检索侧包关联性框架，让「所有悲伤的话」这类泛查询能过机制描述型判据——落位侧恒等判据原文，无配置键）、`prompt.noul.search.query`（{query}=查询原文；检索请求也包上角色框架，给判据框架里的「该查询」提供指代源，元描述查询不被当成内容本身判定）、`prompt.noul.no.han` / `prompt.noul.no.latin`（节点未给 no 判据时的自动生成模板，{yes}=判据原文，按判据语言自动选中/英）、`prompt.choice.add.root` / `prompt.choice.add.node` / `prompt.choice.search.root` / `prompt.choice.search.node`（{node}=层节点名，ROOT 层用 root 键；search 两键可选，未配置继承 add 侧）、`prompt.choice.other`（兜底选项描述） |
 | `questCacheSize` | 查询结果缓存容量（条），默认 256；0=关闭；同款查询零模型直返，保存配置热载 |
-| `growth.*` | 检索即计算·兜底同步生长（默认关）：`growth.enabled` 开关 / `growth.model` 生成模型（默认免费中文款 xingchen-agi/xing4.0-29b-a4b:free，key 复用 `openrouter.apikey`）/ `growth.url` 端点覆盖（可选）/ `growth.maxBranches` 层满护栏（默认 12）——quest 落兜底时同步生成 ≤2 个新分支，验收重跑未命中即回滚，全部失败回原兜底结果；热载 |
+| `growth.*` | 检索即计算·兜底同步生长（默认关）：`growth.enabled` 开关 / `growth.model` 生成模型（默认免费中文款 xingchen-agi/xing4.0-29b-a4b:free，key 复用 `openrouter.apikey`）/ `growth.url` 端点覆盖（可选）/ `growth.maxBranches` 层满护栏（默认 12）/ `growth.prompt` 与 `growth.extend.prompt`（生长与延伸生成提示词文件路径，键值=路径一文件一提示词；真实后端必配——构造时读取，缺失/空白 → 生长步记 `growthStep.failed` / 延伸任务报错；mock 链路走 MockGenerator 不读文件）——quest 落兜底时同步生成 ≤2 个新分支，验收重跑未命中即回滚，全部失败回原兜底结果；热载 |
 | `schema` | demo 表迁移来源，默认 driver-intent-schema.json |
 | `timeoutMs` | 单请求超时（毫秒） |
 | `server.port` / `server.tables` / `server.data` / `server.viz` | 服务端口 / 表目录 / 旧版数据文件（迁移用） / 页面文件（重启生效） |
@@ -112,7 +112,7 @@ java -cp target/classes org.example.SemQuestClient http://localhost:8790   # 指
 | `mock.model` | mock 后端模型 id 展示名，默认 keyword-match |
 | `jev.models` / `openrouter.models` / `bailian.models` | 手动模型清单（逗号分隔；配置即清单优先生效，留空回上游实时拉取） |
 
-配置热载：服务内 2s 轮询 `semquest.properties`，**保存文件即生效**——`noulGate` / `choiceGate` / `questCacheSize` / `growth.*`（生长开关 / 生成模型 / 护栏）/ `prompt.*`（提示词热载同时清空各表查询缓存；`prompt.rule.*` 只置换规则仍等于上次默认文本的表，已自定义的不动），超时、凭据、模型清单、各后端 url / model 同样热载（改凭据自动重建当前后端，零推理调用）。需重启：`server.*`、`schema`、`backend` 首选。
+配置热载：服务内 2s 轮询 `semquest.properties`，**保存文件即生效**——`noulGate` / `choiceGate` / `questCacheSize` / `growth.*`（生长开关 / 生成模型 / 护栏）/ `prompt.*` 与 `growth.prompt*`（键值=提示词文件路径，热载同时清空各表查询缓存；文件装载失败保留旧值；`prompt.rule.*` 只置换规则仍等于上次应用文本的表，已自定义的不动），超时、凭据、模型清单、各后端 url / model 同样热载（改凭据自动重建当前后端，零推理调用）。需重启：`server.*`、`schema`、`backend` 首选。
 
 ## 约定
 

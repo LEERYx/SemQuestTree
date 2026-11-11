@@ -27,7 +27,7 @@ import java.util.Map;
  * <p>层级分支由 schema JSON 预制（类似 MySQL 建表的字段声明）。
  * 判据语言随子树：节点可自带 ruleAdd/ruleSearch 覆盖本子树的规则文本，缺省继承全局；
  * 判据为事件级原子断言，yes = "是"侧断言，no = "否"侧断言（双边判据方言）。
- * 兜底叶不设判据（choice 以固定文案作其选项描述，可经 prompt.choice.other 调整）。
+ * 兜底叶不设判据（choice 以 prompt.choice.other 提示词文件文案作其选项描述）。
  *
  * <pre>
  *   SemQuestTree tree = SemQuestTree.load(Path.of("driver-intent-schema.json"), new JevBackend(cfg, 30000), 0.7);
@@ -40,13 +40,6 @@ public final class SemQuestTree {
     /** 兜底叶后缀：节点 PRICE 的兜底叶名为 PRICE_OTHER。 */
     public static final String OTHER_SUFFIX = "_OTHER";
 
-    /** choice 模式下兜底选项的固定描述（参与归一化的显式逃逸口）。 */
-    public static final String OTHER_OPTION_DESC = "以上都不符合";
-
-    /** 树级默认规则（schema/建表未给规则时的兜底文本；semquest.properties 的 prompt.rule.* 可覆盖）。 */
-    public static final String DEFAULT_RULE_ADD = "判定输入内容与哪个分支的判据相符。";
-    public static final String DEFAULT_RULE_SEARCH = "判断查询内容在寻找哪个分支下的内容。";
-
     /** 判定任务侧别：取 add（落位/回填）还是 search（检索）那套提示词模板。 */
     public enum Task { ADD, SEARCH }
 
@@ -54,10 +47,13 @@ public final class SemQuestTree {
 
     /**
      * 系统侧判定提示词：结构化判定方言里由服务组装的文案。判据 yes/no 与规则文本归树（节点数据），不在这里。
-     * 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文；空值回内置默认。
-     * 必列键：prompt.rule.{add,search}、prompt.noul.add.instructions、prompt.noul.add.criterion、prompt.noul.search.criterion、
-     * prompt.choice.{add.root,add.node,other}；另 3 个可选分野键（prompt.noul.search.instructions、
-     * prompt.choice.search.{root,node}）缺省/留空即继承 add 侧同键（服务端 promptsOf 解析）。
+     * 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文。全部字段必填（null/空白即抛
+     * IllegalArgumentException）——正文一律来自 semquest.properties 的 prompt.* 键指向的提示词文件
+     * （PromptLoader 装载），代码零内置文本、零默认回退。
+     * 必列键：prompt.rule.{add,search}、prompt.noul.add.instructions、prompt.noul.add.criterion、
+     * prompt.noul.search.criterion、prompt.noul.search.query、prompt.choice.{add.root,add.node,other}、
+     * prompt.noul.no.{han,latin}；另 3 个可选分野键（prompt.noul.search.instructions、
+     * prompt.choice.search.{root,node}）未配置即继承 add 侧同键（PromptLoader 解析）。
      * criterion 在判定前包裹判据文本（落位侧恒等 {yes} 写死；检索侧默认包关联性框架：查的是「查询与该类内容的关联性」，
      * 不是把查询归类——add 归类、search 求关联，两侧语义分野）；questQuery
      * 包裹检索请求原文（{query}=查询原文）——两侧框架配套，给判据框架里的「该查询」提供指代源，
@@ -66,13 +62,6 @@ public final class SemQuestTree {
      * noul instructions 仅 jev / respan 方言下发；openrouter（非 respan）与百炼下发的是判据文本（含包裹），此模板不影响它们。
      */
     public static final class Prompts {
-
-        private static final String D_NOUL_INSTRUCTIONS = "{name}";
-        private static final String D_NOUL_ADD_CRITERION = "{yes}";
-        private static final String D_NOUL_SEARCH_CRITERION = "该查询与「{name}」这类内容（含义：{yes}）的关联性是否足够大？足够大才 true";
-        private static final String D_NOUL_SEARCH_QUERY = "用户的问题或陈述：{query}";
-        private static final String D_ROOT_QUESTION = "这句话最符合哪一类？";
-        private static final String D_NODE_QUESTION = "{node}";
 
         /** noul 题目 instructions 模板（{name}=分支名）。 */
         public final String noulAddInstructions;
@@ -91,27 +80,39 @@ public final class SemQuestTree {
         public final String choiceSearchNode;
         /** choice 兜底选项描述（criteria 里 X_OTHER 的文案）。 */
         public final String choiceOtherOption;
+        /** no 侧自动生成模板（{yes}=判据原文；NoulSpec.autoNo 用）：noulNoHan=判据含汉字时、noulNoLatin=纯西文时。 */
+        public final String noulNoHan;
+        public final String noulNoLatin;
 
-        /** 全内置默认（未配置任何 prompt.* 键）。 */
-        public Prompts() {
-            this(null, null, null, null, null, null, null, null, null, null);
-        }
-
+        /**
+         * 全字段必填（来自提示词文件内容，分野键继承已由 PromptLoader 完成）。
+         * @param noulNoHan   no 侧模板（判据含汉字时；prompt.noul.no.han 文件内容）
+         * @param noulNoLatin no 侧模板（纯西文判据时；prompt.noul.no.latin 文件内容）
+         */
         public Prompts(String noulAddInstructions, String noulSearchInstructions,
                        String noulSearchCriterion, String noulAddCriterion, String noulSearchQuery,
                        String choiceAddRoot, String choiceAddNode,
                        String choiceSearchRoot, String choiceSearchNode,
-                       String choiceOtherOption) {
-            this.noulAddInstructions = blank(noulAddInstructions) ? D_NOUL_INSTRUCTIONS : noulAddInstructions.trim();
-            this.noulSearchInstructions = blank(noulSearchInstructions) ? D_NOUL_INSTRUCTIONS : noulSearchInstructions.trim();
-            this.noulSearchCriterion = blank(noulSearchCriterion) ? D_NOUL_SEARCH_CRITERION : noulSearchCriterion.trim();
-            this.noulAddCriterion = blank(noulAddCriterion) ? D_NOUL_ADD_CRITERION : noulAddCriterion.trim();
-            this.noulSearchQuery = blank(noulSearchQuery) ? D_NOUL_SEARCH_QUERY : noulSearchQuery.trim();
-            this.choiceAddRoot = blank(choiceAddRoot) ? D_ROOT_QUESTION : choiceAddRoot.trim();
-            this.choiceAddNode = blank(choiceAddNode) ? D_NODE_QUESTION : choiceAddNode.trim();
-            this.choiceSearchRoot = blank(choiceSearchRoot) ? D_ROOT_QUESTION : choiceSearchRoot.trim();
-            this.choiceSearchNode = blank(choiceSearchNode) ? D_NODE_QUESTION : choiceSearchNode.trim();
-            this.choiceOtherOption = blank(choiceOtherOption) ? OTHER_OPTION_DESC : choiceOtherOption.trim();
+                       String choiceOtherOption, String noulNoHan, String noulNoLatin) {
+            this.noulAddInstructions = req(noulAddInstructions, "prompt.noul.add.instructions");
+            this.noulSearchInstructions = req(noulSearchInstructions, "prompt.noul.search.instructions");
+            this.noulSearchCriterion = req(noulSearchCriterion, "prompt.noul.search.criterion");
+            this.noulAddCriterion = req(noulAddCriterion, "prompt.noul.add.criterion");
+            this.noulSearchQuery = req(noulSearchQuery, "prompt.noul.search.query");
+            this.choiceAddRoot = req(choiceAddRoot, "prompt.choice.add.root");
+            this.choiceAddNode = req(choiceAddNode, "prompt.choice.add.node");
+            this.choiceSearchRoot = req(choiceSearchRoot, "prompt.choice.search.root");
+            this.choiceSearchNode = req(choiceSearchNode, "prompt.choice.search.node");
+            this.choiceOtherOption = req(choiceOtherOption, "prompt.choice.other");
+            this.noulNoHan = req(noulNoHan, "prompt.noul.no.han");
+            this.noulNoLatin = req(noulNoLatin, "prompt.noul.no.latin");
+        }
+
+        /** 单字段严格校验：代码零内置文本，任一提示词缺失即拒绝构造。 */
+        private static String req(String s, String key) {
+            if (s == null || s.trim().isEmpty())
+                throw new IllegalArgumentException("判定提示词缺失: " + key + "（须指向提示词文件）");
+            return s.trim();
         }
 
         /** noul 题目 instructions：按任务侧别取模板，{name} 替换为分支名。 */
@@ -125,10 +126,10 @@ public final class SemQuestTree {
             return noulAddCriterion.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
         }
 
-        /** 判据文本（choice 选项共用）：按任务侧别取包裹模板，{yes} 替换判据原文、{name} 替换分支名（落位侧恒等 {yes}，检索侧包关联性框架）。 */
+        /** 判据文本（choice 选项共用）：落位侧恒等判据原文直下；检索侧包检索框架（{yes}/{name} 替换）。 */
         public String criterion(Task task, String yes, String name) {
-            String tpl = task == Task.ADD ? "{yes}" : noulSearchCriterion;
-            return tpl.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
+            if (task == Task.ADD) return yes == null ? "" : yes;
+            return noulSearchCriterion.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
         }
 
         /** 检索请求文本：包裹模板 {query} 替换查询原文（仅检索侧，add 内容原文直下；noul 与 choice 共用）。 */
@@ -150,12 +151,15 @@ public final class SemQuestTree {
             return noulAddInstructions.equals(p.noulAddInstructions)
                     && noulSearchInstructions.equals(p.noulSearchInstructions)
                     && noulSearchCriterion.equals(p.noulSearchCriterion)
+                    && noulAddCriterion.equals(p.noulAddCriterion)
                     && noulSearchQuery.equals(p.noulSearchQuery)
                     && choiceAddRoot.equals(p.choiceAddRoot)
                     && choiceAddNode.equals(p.choiceAddNode)
                     && choiceSearchRoot.equals(p.choiceSearchRoot)
                     && choiceSearchNode.equals(p.choiceSearchNode)
-                    && choiceOtherOption.equals(p.choiceOtherOption);
+                    && choiceOtherOption.equals(p.choiceOtherOption)
+                    && noulNoHan.equals(p.noulNoHan)
+                    && noulNoLatin.equals(p.noulNoLatin);
         }
 
         @Override
@@ -163,21 +167,28 @@ public final class SemQuestTree {
             int h = noulAddInstructions.hashCode();
             h = h * 31 + noulSearchInstructions.hashCode();
             h = h * 31 + noulSearchCriterion.hashCode();
+            h = h * 31 + noulAddCriterion.hashCode();
             h = h * 31 + noulSearchQuery.hashCode();
             h = h * 31 + choiceAddRoot.hashCode();
             h = h * 31 + choiceAddNode.hashCode();
             h = h * 31 + choiceSearchRoot.hashCode();
             h = h * 31 + choiceSearchNode.hashCode();
-            return h * 31 + choiceOtherOption.hashCode();
-        }
-
-        private static boolean blank(String s) {
-            return s == null || s.trim().isEmpty();
+            h = h * 31 + choiceOtherOption.hashCode();
+            h = h * 31 + noulNoHan.hashCode();
+            return h * 31 + noulNoLatin.hashCode();
         }
     }
 
-    /** 当前判定提示词（全表共用一份配置值；semquest.properties 保存即热载）。 */
-    private volatile Prompts prompts = new Prompts();
+    /** 当前判定提示词（全表共用一份；服务启动时从提示词文件装载注入，未注入不可判定——代码零内置文本）。 */
+    private volatile Prompts prompts;
+
+    /** 判定提示词取用：未注入即抛错（fail-fast，不静默回退任何内置文本）。 */
+    private Prompts promptsOrThrow() {
+        Prompts ps = prompts;
+        if (ps == null)
+            throw new IllegalStateException("判定提示词未注入：应经 setPrompts(PromptLoader.of(cfg)) 在服务启动时装载");
+        return ps;
+    }
 
     public Prompts prompts() {
         return prompts;
@@ -368,10 +379,8 @@ public final class SemQuestTree {
         double gate = m.get("noulGate") instanceof Number ? ((Number) m.get("noulGate")).doubleValue()
                 : (m.get("gate") instanceof Number ? ((Number) m.get("gate")).doubleValue() : gateDefault);
         double choiceGate = m.get("choiceGate") instanceof Number ? ((Number) m.get("choiceGate")).doubleValue() : 0.6d;
-        String ruleAdd = optText(m, "ruleAdd");
-        if (ruleAdd == null) ruleAdd = DEFAULT_RULE_ADD;
+        String ruleAdd = optText(m, "ruleAdd");      // null 合法：建表时由 server 显式传入规则文件内容，schema 可选自带覆盖
         String ruleSearch = optText(m, "ruleSearch");
-        if (ruleSearch == null) ruleSearch = DEFAULT_RULE_SEARCH;
         if (!(m.get("root") instanceof Map)) {
             throw new IOException("schema 缺 root 节点: " + source);
         }
@@ -454,10 +463,11 @@ public final class SemQuestTree {
             rep.leaves.add(node.name);
             return;
         }
+        final Prompts ps = promptsOrThrow();
         final String effRule = node.ruleAdd != null ? node.ruleAdd : rule;   // 子树规则覆盖
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
         for (SemNode c : node.children) {
-            qs.put(c.name, new NoulSpec(prompts.noulInstructions(Task.ADD, c.name), prompts.addCriterion(c.yes, c.name), c.no));
+            qs.put(c.name, new NoulSpec(ps.noulInstructions(Task.ADD, c.name), ps.addCriterion(c.yes, c.name), c.no, ps.noulNoHan, ps.noulNoLatin));
         }
         // 兜底叶不进请求
         NoulReply r = ask(node.name, content, effRule, qs, rep.steps);
@@ -519,16 +529,17 @@ public final class SemQuestTree {
      */
     private ChoicePick askChoice(SemNode node, String content, String rule, Task task, List<Step> steps)
             throws IOException {
+        final Prompts ps = promptsOrThrow();
         LinkedHashMap<String, String> criteria = new LinkedHashMap<String, String>();
         for (SemNode c : node.children) {
             // 判据按任务侧别包裹（与 noul 共用 criterion 模板）：检索侧包检索框架给「该查询」落点，落位侧恒等原文
             String yes = c.yes != null && !c.yes.trim().isEmpty() ? c.yes : c.name;
-            criteria.put(c.name, prompts.criterion(task, yes, c.name));
+            criteria.put(c.name, ps.criterion(task, yes, c.name));
         }
         SemNode other = otherLeaf(node);
-        criteria.put(other.name, prompts.choiceOtherOption);
+        criteria.put(other.name, ps.choiceOtherOption);
 
-        String question = prompts.choiceQuestion(task, node.name);
+        String question = ps.choiceQuestion(task, node.name);
         NoulReply r = backend.choice(content, rule, question, criteria);
         steps.add(new Step(node.name, r));
         requests++;
@@ -579,13 +590,14 @@ public final class SemQuestTree {
             }
         }
         QuestReport rep = new QuestReport(query);
+        final Prompts ps = promptsOrThrow();
         LinkedHashSet<SemNode> matched = new LinkedHashSet<SemNode>();
         if (choiceMode) {
             // choice 检索同样先包查询角色框架（与 noul 共用 questQuery 模板）：缓存键/报告/节点直取均保持原始查询
-            descendQuestChoice(root, prompts.questQuery(query), matched, rep, ruleSearch, 1.0d);
+            descendQuestChoice(root, ps.questQuery(query), matched, rep, ruleSearch, 1.0d);
         } else {
             // 检索请求先包角色框架再下发：给判据检索框架里的「该查询」提供指代源（缓存键/报告/节点直取均保持原始查询）
-            descendQuest(root, prompts.questQuery(query), matched, rep.steps, ruleSearch);
+            descendQuest(root, ps.questQuery(query), matched, rep.steps, ruleSearch);
         }
 
         LinkedHashMap<Doc, LinkedHashSet<String>> via = new LinkedHashMap<Doc, LinkedHashSet<String>>();
@@ -635,11 +647,12 @@ public final class SemQuestTree {
             matched.add(node);
             return;
         }
+        final Prompts ps = promptsOrThrow();
         final String effRule = node.ruleSearch != null ? node.ruleSearch : rule;   // 子树规则覆盖
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
         for (SemNode c : node.children) {   // 兜底叶不参与检索
             // 判据包检索框架（search 侧模板）：框架落在模型读的判据字段里，泛查询才能过机制描述型判据
-            qs.put(c.name, new NoulSpec(prompts.noulInstructions(Task.SEARCH, c.name), prompts.criterion(Task.SEARCH, c.yes, c.name), null));
+            qs.put(c.name, new NoulSpec(ps.noulInstructions(Task.SEARCH, c.name), ps.criterion(Task.SEARCH, c.yes, c.name), null, ps.noulNoHan, ps.noulNoLatin));
         }
         NoulReply r = ask(node.name, query, effRule, qs, steps);
         boolean any = false;
@@ -1042,6 +1055,7 @@ public final class SemQuestTree {
      * 选中新选项且达采纳线迁入，否则留/落兜底。no 判据留空时自动生成（仅 noul）。
      */
     public GrowReport growNode(String parent, String name, String yes, String no) throws IOException {
+        final Prompts ps = promptsOrThrow();   // no 侧自动生成需要模板（prompt.noul.no.* 提示词文件）
         bustQuestCache();   // 结构变了，查询缓存全部作废
         if (!choiceMode && (yes == null || yes.trim().isEmpty())) {
             throw new IllegalArgumentException("yes 判据不可为空");
@@ -1049,7 +1063,7 @@ public final class SemQuestTree {
         String yesT = yes != null ? yes.trim() : "";
         String noT = choiceMode
                 ? (no != null && !no.trim().isEmpty() ? no.trim() : null)          // choice：no 无意义不造
-                : (no != null && !no.trim().isEmpty() ? no.trim() : NoulSpec.autoNo(yesT));
+                : (no != null && !no.trim().isEmpty() ? no.trim() : NoulSpec.autoNo(yesT, ps.noulNoHan, ps.noulNoLatin));
         SemNode p = find(root, parent);
         if (p == null) throw new IllegalArgumentException("父节点不存在: " + parent);
         String effRule = effectiveRuleOf(p);   // 父所在子树若有规则覆盖（如中文子树），重判沿用它
@@ -1278,8 +1292,9 @@ public final class SemQuestTree {
      * 纯参数化不读树结构：延伸编排可在表锁外调用，账单累加同步保证并发安全。
      */
     public double judgeOne(String content, String name, String yes, String no, String rule) throws IOException {
+        final Prompts ps = promptsOrThrow();
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
-        qs.put(name, new NoulSpec(prompts.noulInstructions(Task.ADD, name), prompts.addCriterion(yes, name), no));
+        qs.put(name, new NoulSpec(ps.noulInstructions(Task.ADD, name), ps.addCriterion(yes, name), no, ps.noulNoHan, ps.noulNoLatin));
         NoulReply r = backend.noul(content, rule, qs);
         synchronized (this) {   // 延伸线程在表锁外调用：账单计数并发安全
             requests++;
@@ -1315,6 +1330,7 @@ public final class SemQuestTree {
      * yes 缺省视为不改；no 留空且 yes 有新值时按语言自动生成否定侧。
      */
     public EditReport editNode(String name, String newName, String yes, String no) {
+        final Prompts ps = promptsOrThrow();   // no 侧自动生成需要模板（prompt.noul.no.* 提示词文件）
         bustQuestCache();   // 判据/名字变了，缓存结果与重跑慢路不再一致
         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("节点名不可为空");
         if (root.name.equals(name.trim())) throw new IllegalArgumentException("根节点不可修改");
@@ -1352,7 +1368,7 @@ public final class SemQuestTree {
             if (choiceMode) {
                 n.no = (no == null || no.trim().isEmpty()) ? null : no.trim();   // choice：选项描述，no 不用
             } else {
-                n.no = (no == null || no.trim().isEmpty()) ? NoulSpec.autoNo(n.yes) : no.trim();
+                n.no = (no == null || no.trim().isEmpty()) ? NoulSpec.autoNo(n.yes, ps.noulNoHan, ps.noulNoLatin) : no.trim();
             }
         } else if (no != null && !no.trim().isEmpty()) {
             n.no = no.trim();   // 只改 no

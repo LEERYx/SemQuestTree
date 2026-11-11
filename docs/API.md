@@ -136,7 +136,7 @@
 
 落位：一条语料沿判据树下行落进叶。**入参** `{content, id?}`：`id` 缺省自动生成 `U-<36进制时间戳>`；**同 id 重落 = 替换旧落位**（先摘旧指针再落位）。
 
-**数据驱动生长**（`growth.enabled=true` 时）：本条落位全为兜底（树里没有能承接这条内容的类别，含空树根叶）→ 服务端按**本条内容**调生成模型提出 ≤`growth.maxNew` 个新分支逐个验收入树；任一收编即响应 `leaves` 换为新枝、记 grown（auto 标记，重启零模型回放）并挂 `growthStep`；全部未收编则分支当场回滚、本条留在原兜底叶数据不丢。生成模型经 `growth.model` 配置、提示词经 `growth.prompt` 配置（均可热载，提示词空白回内置模板）；思考型模型可用 `growth.thinking`（none/low/medium/high）+ `growth.maxTokens` 压住输出量——该次生成占 add 总耗时九成以上，实测 qwen3.7-flash 由 38.6s 降到 5.7s（生成 3066 → 122 token）。失败原因（该层分支已满 / 缺 openrouter 凭据 / 生成调用失败）也写进 `growthStep.failed`。
+**数据驱动生长**（`growth.enabled=true` 时）：本条落位全为兜底（树里没有能承接这条内容的类别，含空树根叶）→ 服务端按**本条内容**调生成模型提出 ≤`growth.maxNew` 个新分支逐个验收入树；任一收编即响应 `leaves` 换为新枝、记 grown（auto 标记，重启零模型回放）并挂 `growthStep`；全部未收编则分支当场回滚、本条留在原兜底叶数据不丢。生成模型经 `growth.model` 配置、生长提示词经 `growth.prompt`（键值=提示词文件路径，`prompts/` 目录一文件一提示词，构造时读取；缺失/空白 → 本步放弃，原因写进 `growthStep.failed`，均可热载、装载失败保留旧值）；思考型模型可用 `growth.thinking`（none/low/medium/high）+ `growth.maxTokens` 压住输出量——该次生成占 add 总耗时九成以上，实测 qwen3.7-flash 由 38.6s 降到 5.7s（生成 3066 → 122 token）。失败原因（该层分支已满 / 缺 openrouter 凭据 / 生长提示词装载失败 / 生成调用失败）也写进 `growthStep.failed`。
 
 **节点延伸（深度生长）**：落位叶存量超过水位（`growth.splitAt × growth.splitFactor`，默认 255×0.7=178）时自动提交后台延伸任务——把拥挤叶串行拆细出下一层（不阻塞本请求），详见下方 `/extend`。
 

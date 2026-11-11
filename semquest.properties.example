@@ -45,10 +45,11 @@ growth.maxNew=2
 # 实测取向：none 只出 JSON 正文，约 3~6s；low 判据更厚，约 8~13s。
 #growth.thinking=none
 #growth.maxTokens=1024
-# 生成提示词模板（热载；完整模板见 semquest.properties 的 growth.prompt 显式示例，
-# 判据语义=类别含义：名词式列举该类覆盖的主题/维度；留空回代码内置默认，两者语义一致）
-# 占位符：{parent}=层节点名、{siblings}=现有分支清单、{count}/{samples}=落兜底内容、{maxNew}=上限（\n=换行）
-#growth.prompt=你在维护一棵判据树（用自然语言判据给内容分类）。层「{parent}」现有分支：\n{siblings}以下 {count} 条内容落入了兜底（现有分支都不覆盖）：\n{samples}提出至多 {maxNew} 个新分支让这类内容有家可归。要求：\n- 名字是一个类别词（不超过 6 个字）；yes 写这个类别的含义——它覆盖哪些主题或维度，用名词短语列举（示例：类别「职业身份」的 yes 写「工作地域，工作内容」这样的含义列举，不要写成「内容聚焦于……」那种描述什么话会进来的句子）；\n- 含义须与现有分支互斥不重叠；若现有分支已能覆盖这些内容，branches 返回空数组。\n只输出 JSON 对象：{"branches":[{"name":"…","yes":"…"}]}
+# 落兜底生长提示词：growth.prompt = 提示词文件路径（相对进程工作目录或绝对路径），
+# 文件内容即模板正文（UTF-8 纯文本；本项目在 prompts/ 目录一文件一提示词）
+# 占位符：{parent}=层节点名、{siblings}=现有分支清单、{count}/{samples}=落兜底内容、{maxNew}=上限
+# 未配置/文件不可读/内容空白 → 生长步直接记 growthStep.failed（代码零内置模板，不给默认）
+growth.prompt=prompts/growth-prompt.txt
 
 # ── 节点延伸（深度生长）：叶存量超水位 → 后台串行拆细该节点（不阻塞 add/quest）──
 # 触发双通道：① 水位自动（add 落位后检查）② viz 右键手动触发；false 关闭（生长总开关也须开）
@@ -59,41 +60,46 @@ growth.maxNew=2
 # 单次延伸最多长出的子类数；给生成器看的存量样本条数
 #growth.extend.maxNew=8
 #growth.extend.samples=40
-# 延伸生成提示词模板（层级无关：不写死「第几层」，只约束「比父节点细一层」，任意深度递复用）
-# 占位符：{parent}={parentYes}={count}={siblings}（每轮最新）={samples}；完整模板见 semquest.properties 的 growth.extend.prompt
-#growth.extend.prompt=你在维护一棵判据树（用自然语言判据给内容分类）。节点「{parent}」（含义：{parentYes}）下已积累 {count} 条内容，太拥挤了，需要向下延伸出更细的子类。\n\n它现有的子分支（可能为空，已互斥不重叠）：\n{siblings}\n该节点下的内容样本：\n{samples}提出 1 个新子分支，把这批内容进一步细分。要求：\n- 子类比「{parent}」细一层：{parentYes} 是它们的公共上限，子类只覆盖其中一块——不能与父类同粒度，也不能与现有子分支重叠；\n- 优先挑内容样本里占比最大、内部又相似的一簇，让最多的内容有子类可归；\n- 名字是一个类别词（不超过 6 个字）；yes 写这个子类的含义——它在父类基础上再往哪个具体方向收，用名词短语列举（示例：父类「职业身份」含义「工作地域，工作内容」，其子类「技术研发」的 yes 写「工程师，架构师，算法研究员」这样更细的岗位列举，不要写成「内容聚焦于……」那种句子）；\n- 若现有子分支已能覆盖这些内容，或内容之间找不到更细的共同侧面，branches 返回空数组。\n只输出 JSON 对象：{"branches":[{"name":"…","yes":"…"}]}
+# 延伸生成提示词（层级无关：不写死「第几层」，只约束「比父节点细一层」，任意深度递复用）
+# 占位符：{parent}={parentYes}={count}={siblings}（每轮最新）={samples}；未配置/空白 → 延伸任务报错终止
+growth.extend.prompt=prompts/growth-extend-prompt.txt
 
 # ── 判定提示词（系统侧组装文案；判据 yes/no 与规则文本归树，不在这里）──
-# 热载：保存即应用到全部表，同时清空各表查询缓存
-# 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文；删行或留空=内置默认
+# 键值 = 提示词文件路径（相对进程工作目录或绝对路径），文件内容即模板正文（UTF-8 纯文本，一文件一提示词）。
+# 全部必配：键值缺失/文件不可读/内容空白 → 服务启动失败（代码零内置文本，不给任何默认回退）；
+# 热载：保存即应用到全部表并清空查询缓存；热载时装载失败保留旧值。
+# 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文、{query}=查询原文
 # noul instructions 仅 jev / respan 方言下发；openrouter（非 respan）与百炼下发的是判据文本（含 criterion 包裹）
-# 规则（state.rule；新表默认值，热载置换仍为默认文本的表，已自定义的不动）
+# 规则（state.rule；建表默认值；热载仅置换仍等于上次应用文本的表，已自定义的不动）
 # 语义分野：add 的判据=类别含义（内容是否属此类）；search 的判据=关联性（查询与该类内容的相关程度，不做归类）
-prompt.rule.add=判断输入内容与哪个分支的类别含义相符。
-prompt.rule.search=判断该查询的问题或陈述与哪个分支下的内容关联性最大。
+prompt.rule.add=prompts/rule-add.txt
+prompt.rule.search=prompts/rule-search.txt
 # noul instructions（questions{name}.instructions；{name}=分支名）
-prompt.noul.add.instructions={name}
-# 落位判据包裹（判据=类别含义，落位侧把含义转成判定任务；留空/删行=恒等 {yes} 旧行为；choice 落位不套用）
-#prompt.noul.add.criterion=判断输入内容是否属于「{name}」这一类——该类含义：{yes}。属于 true，不属于 false。
+prompt.noul.add.instructions=prompts/noul-add-instructions.txt
+# 落位判据包裹（判据=类别含义，落位侧把含义转成判定任务；choice 落位不套用）
+prompt.noul.add.criterion=prompts/noul-add-criterion.txt
 # 检索判据包裹（判定前对判据文本套模板；{yes}=判据原文、{name}=分支名）
-# 落位侧恒等 {yes}（写死，无配置键）：判据=类别含义，模型按「内容是否属此类」判；
-# 检索侧默认包关联性框架，判「该查询的问题或陈述与该类内容的关联性是否够大」——不做归类，
-# 问句式查询（如「我在哪里工作」）靠它接住；noul 题目与 choice 选项共用（choice 检索的选项描述也套本框架）
-prompt.noul.search.criterion=该查询与「{name}」这类内容（含义：{yes}）的关联性是否足够大？足够大才 true
+# 落位侧恒等判据原文（无配置键）；检索侧包关联性框架——add 归类、search 求关联，两侧语义分野；
+# 问句式查询（如「我在哪里工作」）靠框架接住；noul 题目与 choice 选项共用（choice 检索的选项描述也套本框架）
+prompt.noul.search.criterion=prompts/noul-search-criterion.txt
 # choice 问句（questions.q.instructions；{node}=层节点名，ROOT 层用 root 键）
-prompt.choice.add.root=这句话最符合哪一类？
-prompt.choice.add.node={node}
+prompt.choice.add.root=prompts/choice-add-root.txt
+prompt.choice.add.node=prompts/choice-add-node.txt
 # choice 兜底选项描述（criteria[X_OTHER]）
-prompt.choice.other=以上都不符合
+prompt.choice.other=prompts/choice-other.txt
+
+# no 侧自动生成模板（节点未给 no 判据时由 NoulSpec.autoNo 生成；{yes}=判据原文，按判据语言自动选中/英模板）
+prompt.noul.no.han=prompts/noul-no-han.txt
+prompt.noul.no.latin=prompts/noul-no-latin.txt
 
 # 检索请求包裹（{query}=查询原文；noul 与 choice 检索共用）：给上面判据检索框架里的
-# 「该查询」提供指代源，使「所有悲伤的话」这类元描述查询不被当成内容本身判定；配 {query} 即恒等退回裸查询
-prompt.noul.search.query=用户的问题或陈述：{query}
+# 「该查询」提供指代源，使「所有悲伤的话」这类元描述查询不被当成内容本身判定
+prompt.noul.search.query=prompts/noul-search-query.txt
 
-# 可选分野键：检索侧用不同文案时才配，删行或留空即继承 add 侧同键
-#prompt.noul.search.instructions={name}
-#prompt.choice.search.root=这句话最符合哪一类？
-#prompt.choice.search.node={node}
+# 可选分野键：检索侧用不同文案时才配，未配置即继承 add 侧同键（文件仍须可读）
+#prompt.noul.search.instructions=prompts/noul-search-instructions.txt
+#prompt.choice.search.root=prompts/choice-search-root.txt
+#prompt.choice.search.node=prompts/choice-search-node.txt
 
 # 预制层级分支 schema（类似建表的字段声明）
 schema=driver-intent-schema.json

@@ -41,6 +41,7 @@ build/
 ### SemQuestTree ###
 # 凭据文件（真实 key 绝不入库；从 semquest.properties.example 复制起步）
 semquest.properties
+semquest.properties.bak*
 # 本地表数据（tables/*.json 是运行期用户数据）
 tables/
 /.qoder/

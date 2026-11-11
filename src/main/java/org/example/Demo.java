@@ -54,6 +54,7 @@ public class Demo {
 
         DecisionBackend backend = createBackend(cfg, backendName, timeoutMs);
         SemQuestTree tree = SemQuestTree.load(Paths.get(schemaPath), backend, gate);
+        tree.setPrompts(PromptLoader.of(cfg));   // 判定提示词全部来自提示词文件（缺失即抛错终止）
 
         System.out.println("== 问义树 SemQuestTree ==" +
                 "\n配置: " + cfg.file() + (cfg.loaded() ? "" : "（未找到，使用代码内默认）") +
