@@ -40,6 +40,12 @@ public final class SwitchableBackend implements DecisionBackend {
     }
 
     @Override
+    public NoulReply docFilter(String content, String rule, LinkedHashMap<String, NoulSpec> questions)
+            throws IOException {
+        return target.docFilter(content, rule, questions);   // 不依赖接口 default：防 mock 等专属实现被包装层 noul 兜底绕过
+    }
+
+    @Override
     public NoulReply choice(String content, String rule, String question,
                             LinkedHashMap<String, String> criteria) throws IOException {
         return target.choice(content, rule, question, criteria);

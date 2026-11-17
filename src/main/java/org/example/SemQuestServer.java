@@ -154,6 +154,12 @@ public final class SemQuestServer {
                 t.tree.setQuestCacheCap(qcInit);
             }
         }
+        // doc 过滤组配置铺到全部表（on/批次/门控/截断/总量上限；模板未配置时树内自动不生效）
+        for (Table t : tables.values()) {
+            synchronized (t) {
+                applyDocFilter(cfg, t.tree);
+            }
+        }
         // 判定提示词铺到全部表（装载已在上文 fail-fast 完成）
         for (Table t : tables.values()) {
             synchronized (t) {
@@ -230,6 +236,14 @@ public final class SemQuestServer {
                             }
                             System.out.println("[热载] 表「" + t.name + "」查询缓存容量 → "
                                     + (qc == 0 ? "关闭" : qc));
+                        }
+                        // doc 过滤组热载（on/批次/门控/截断/总量上限；setDocFilter 值变化时内部清查询缓存）
+                        for (Table t : tables.values()) {
+                            synchronized (t) {
+                                if (applyDocFilter(cfg, t.tree)) {
+                                    System.out.println("[热载] 表「" + t.name + "」doc 过滤配置 → 已更新");
+                                }
+                            }
                         }
                         // 提示词热载：全部来自提示词文件；装载失败（路径未配置/文件不可读/空白）即保留旧值
                         SemQuestTree.Prompts np = null;
@@ -739,6 +753,7 @@ public final class SemQuestServer {
                             PromptLoader.rule(cfg, "prompt.rule.add"),
                             PromptLoader.rule(cfg, "prompt.rule.search"));
                     tree.setQuestCacheCap(Math.max(0, cfg.getInt("questCacheSize", 256)));
+                    applyDocFilter(cfg, tree);
                     tree.setPrompts(PromptLoader.of(cfg));
                     Table t = new Table(id, name, note, System.currentTimeMillis(), false, tree,
                             tablesDir.resolve(id + ".json"),
@@ -1932,9 +1947,19 @@ public final class SemQuestServer {
                 null);   // 体检模板延伸用不到：不读文件，用到才报（三模板互不连坐）
     }
 
-    /** 延伸水位：growth.splitAt × growth.splitFactor（默认 255×0.7=178），≤0 视为关闭水位触发。 */
+    /** 延伸水位：growth.splitAt × growth.splitFactor（默认 10×1.0=10：叶存量软上限，超即后台延伸拆细），≤0 视为关闭水位触发。 */
     private static int extendWatermark(Config cfg) {
-        return (int) Math.round(cfg.getInt("growth.splitAt", 255) * cfg.getDouble("growth.splitFactor", 0.7));
+        return (int) Math.round(cfg.getInt("growth.splitAt", 10) * cfg.getDouble("growth.splitFactor", 1.0));
+    }
+
+    /** doc 过滤组配置读取并应用到树（代码默认关；另须 prompt.docfilter.criterion 模板就位才实际过滤）。返回是否发生变化。 */
+    private static boolean applyDocFilter(Config cfg, SemQuestTree tree) {
+        boolean on = "true".equalsIgnoreCase(cfg.get("docFilter", "false"));
+        return tree.setDocFilter(on,
+                cfg.getInt("docFilter.batch", 20),
+                cfg.getDouble("docFilterGate", 0.6),
+                cfg.getInt("docFilter.maxLen", 200),
+                cfg.getInt("docFilter.maxDocs", 100));
     }
 
     /**
@@ -2418,6 +2443,8 @@ public final class SemQuestServer {
                 return;
             }
             String query = ((String) qv).trim();
+            // confirm（可选，默认 false）：doc 过滤超量时控制是否跳过确认直接执行（confirmRequired 流程第二步）
+            boolean confirm = Boolean.TRUE.equals(req.get("confirm"));
             // 节点名直取：查询与节点名完全一致 → 直接返回该节点子树内容（零模型调用，复用节点直取逻辑）
             try {
                 json(ex, 200, Json.write(nodeQuestMap(t.tree.nodeDocs(query))));
@@ -2426,7 +2453,7 @@ public final class SemQuestServer {
                 // 非节点名 → 走自然语言检索
             }
             try {
-                SemQuestTree.QuestReport rep = t.tree.quest(query);
+                SemQuestTree.QuestReport rep = t.tree.quest(query, confirm);
                 Map<String, Object> out = questMap(t.tree, rep);
                 // 纯读：检索只按现有结构下行，查不到就是查不到——不为查询改树（生长在 add/addBatch 触发）
                 json(ex, 200, Json.write(out));
@@ -2655,7 +2682,7 @@ public final class SemQuestServer {
         return out;
     }
 
-    /** quest 响应组装：命中叶 + 排序文档（补正文）+ 判定轨迹 + 统计行。 */
+    /** quest 响应组装：命中叶 + 排序文档（补正文）+ doc 过滤摘要 + 判定轨迹 + 统计行。 */
     private static Map<String, Object> questMap(SemQuestTree tree, SemQuestTree.QuestReport rep) {
         Map<String, String> contents = new LinkedHashMap<String, String>();
         for (Object o : tree.docsSnapshot()) {
@@ -2676,9 +2703,16 @@ public final class SemQuestServer {
             m.put("score", rd.score);
             m.put("viaLeaves", rd.viaLeaves);
             m.put("content", contents.get(rd.docId));
+            m.put("docP", rd.docP);   // doc 过滤 P(相关)；未过滤恒 1.0
             ranked.add(m);
         }
         out.put("ranked", ranked);
+        LinkedHashMap<String, Object> df = new LinkedHashMap<String, Object>();
+        df.put("total", rep.docFilterTotal);           // 去重待过滤 doc 总数（未执行=0）
+        df.put("kept", rep.docFilterKept);             // 过滤后保留数（未执行=0）
+        df.put("calls", rep.docFilterCalls);           // 过滤判定批次数
+        df.put("confirmRequired", rep.confirmRequired); // true=总量超上限且未确认：ranked 为未过滤全量，带 confirm=true 重发执行
+        out.put("docFilter", df);
         out.put("steps", stepsJson(rep.steps));
         out.put("stats", tree.statsLine());
         return out;

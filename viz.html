@@ -430,6 +430,10 @@
       'quest.noHitNoul': '没有叶过门（沿途 P(yes) 均低于门控 {gate}）',
       'quest.noHitChoice': '没有命中（choice 单路径下行：途中置信度低于采纳线 {gate} 或落兜底即止）',
       'quest.noDocs': '（无命中文档）', 'quest.trace': '判定轨迹（{n} 次请求）',
+            'quest.dfSummary': '🔍 doc 过滤 · 保留 {kept}/{total} · {calls} 次判定',
+            'quest.dfConfirm': '本次检索命中 {n} 条待过滤内容，执行 doc 过滤将产生多次判定调用（有 token 花销）。是否继续？\n取消将返回未过滤结果。',
+            'quest.dfUnfiltered': '⚠ 未执行 doc 过滤（内容量 {n} 超上限且未确认）',
+            'quest.docP': 'P相关 {p}',
       'growth.card': '🌱 落兜底内容当场催生新分支 · {n} 个（@{parent} 层）已收编本条',
       'growth.gen': '生成 in {in} / out {out} tokens · {ms}ms',
       'growth.failed': '🌱 树尝试为这条内容当场生长新分支但未成功，本条保留在兜底叶',
@@ -571,6 +575,10 @@
       'quest.noHitNoul': 'No leaf passed the gate (every P(yes) along the way is below {gate})',
       'quest.noHitChoice': 'No hit (choice descends a single path: confidence below the accept line {gate} or a fallback ends the walk)',
       'quest.noDocs': '(no matching docs)', 'quest.trace': 'Decision trace ({n} requests)',
+            'quest.dfSummary': '🔍 doc filter · kept {kept}/{total} · {calls} calls',
+            'quest.dfConfirm': 'This query hits {n} docs to filter; running the filter costs extra decision calls (tokens). Continue?\nCancel returns unfiltered results.',
+            'quest.dfUnfiltered': '⚠ doc filter skipped ({n} docs over the limit, not confirmed)',
+            'quest.docP': 'P(relevance) {p}',
       'growth.card': '🌱 Fallback content just grew {n} new branch(es) under @{parent}; this entry was adopted',
       'growth.gen': 'generation in {in} / out {out} tokens · {ms}ms',
       'growth.failed': '🌱 The tree tried to grow new branches for this entry but failed; it stays on the fallback leaf',
@@ -1748,11 +1756,23 @@
           else renderAddBatch(d);
         }
       } else {
-        renderQuest(await apiSend(T0() + '/quest', 'POST', { query: text }));
+        await runQuest(text);
       }
     } catch (e) {
       out.innerHTML = '<div class="error">' + esc(e) + '</div>';
     }
+  }
+
+  // 检索 + doc 过滤超量确认流：confirmRequired=true 时弹框问用户是否花这笔判定调用，
+  // 确认带 confirm=true 重发执行过滤；取消直接渲染未过滤结果（响应里 ranked 本就保持全量）
+  async function runQuest(text) {
+    let d = await apiSend(T0() + '/quest', 'POST', { query: text });
+    if (d.docFilter && d.docFilter.confirmRequired) {
+      if (confirm(Tf('quest.dfConfirm', { n: d.docFilter.total || 0 }))) {
+        d = await apiSend(T0() + '/quest', 'POST', { query: text, confirm: true });
+      }
+    }
+    renderQuest(d);
   }
 
   // 批量导入进度条：与延伸进度条同一套视觉（ext-track/ext-fill），按分片推进
@@ -1910,8 +1930,15 @@
             '<div class="q-rank"><span class="q-score">' + esc(fmtScore(r.score)) + '</span>' +
             '<div style="min-width:0"><span class="doc-id">' + esc(r.docId) + '</span>' +
             '<div class="doc-content">' + esc(r.content || '') + '</div>' +
-            '<div class="q-meta">via ' + (r.viaLeaves || []).map(esc).join(' + ') + '</div></div></div>').join('')
+            '<div class="q-meta">via ' + (r.viaLeaves || []).map(esc).join(' + ') +
+            (r.docP != null && r.docP < 1 ? ' · ' + esc(Tf('quest.docP', { p: r.docP.toFixed(2) })) : '') + '</div></div></div>').join('')
         : '<div class="q-none">' + esc(T('quest.noDocs')) + '</div>';
+    const df = d.docFilter;
+    if (df && df.confirmRequired) {
+      html += '<div class="q-sub"><span class="dim">' + esc(Tf('quest.dfUnfiltered', { n: df.total || 0 })) + '</span></div>';
+    } else if (df && df.calls > 0) {
+      html += '<div class="q-sub"><span class="dim">' + esc(Tf('quest.dfSummary', { kept: df.kept || 0, total: df.total || 0, calls: df.calls || 0 })) + '</span></div>';
+    }
     html += traceHtml(d.steps);
     html += '<div class="q-meta" style="margin-top:10px">' + esc(d.stats || '') + '</div>';
     $('#q-out').innerHTML = html;

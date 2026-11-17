@@ -85,9 +85,10 @@ growth.audit.prompt=prompts/audit-prompt.txt
 # ── 节点延伸（深度生长）：叶存量超水位 → 后台串行拆细该节点（不阻塞 add/quest）──
 # 触发双通道：① 水位自动（add 落位后检查）② viz 右键手动触发；false 关闭（生长总开关也须开）
 #growth.extend=true
-# 水位 = growth.splitAt × growth.splitFactor（例 255×0.7=178 条）；≤0 关闭水位触发
-#growth.splitAt=255
-#growth.splitFactor=0.7
+# 水位 = growth.splitAt × growth.splitFactor（例 10×1.0=10 条：叶存量软上限，超即拆细到下一层）；≤0 关闭水位触发
+# 2026-11-17 起默认 10 条/叶（原 178）——叶子小则 doc 过滤单批可控、树更细
+#growth.splitAt=10
+#growth.splitFactor=1.0
 # 单次延伸最多长出的子类数；给生成器看的存量样本条数
 #growth.extend.maxNew=8
 #growth.extend.samples=40
@@ -95,6 +96,22 @@ growth.audit.prompt=prompts/audit-prompt.txt
 # 占位符：{parent}={parentYes}={count}={siblings}（每轮最新）={samples}={attempts}（上次失败证据，无失败时不注入）；
 # 未配置/空白 → 延伸任务报错终止
 growth.extend.prompt=prompts/growth-extend-prompt.txt
+
+# ── doc 级出检过滤（quest 命中叶后对叶内内容逐条判定相关性，滤掉与查询无关的返回；热载）──
+# 「车」叶下落了自行车和火车：层判定只保证叶子相关，doc 过滤补齐判定链最后一环。
+# 判据树「每一跳都可判定」到 doc 级补全；与叶子水位延伸互补——延伸把常见异质在结构上拆开，过滤兜住残留。
+docFilter=true
+# P(相关) 采纳线（独立于 noulGate：doc 相关性与层判定语义强度不同）
+docFilterGate=0.6
+# 单次打包判定条数（分批多次调用，单批 prompt 规模恒定）；百炼后端单请求 ≤16 题自动再拆
+docFilter.batch=20
+# 判据里 doc 原文截断上限（只求判定相关性，防长文撑爆单批）
+docFilter.maxLen=200
+# 单次 quest 待过滤 doc 总量上限（跨命中叶去重）：超过则响应 confirmRequired=true 返回未过滤结果，
+# 由前端询问用户是否继续，确认后带 confirm=true 重发才执行——大花销必须过用户点头这道闸
+docFilter.maxDocs=100
+# doc 过滤判据包裹模板（{yes}=doc 原文截断后）；唯一可选提示词——未配置时 doc 过滤自动不生效（旧部署零影响）
+prompt.docfilter.criterion=prompts/doc-filter-prompt.txt
 
 # ── 判定提示词（系统侧组装文案；判据 yes/no 与规则文本归树，不在这里）──
 # 键值 = 提示词文件路径（相对进程工作目录或绝对路径），文件内容即模板正文（UTF-8 纯文本，一文件一提示词）。

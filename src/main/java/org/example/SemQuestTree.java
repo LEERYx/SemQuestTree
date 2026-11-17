@@ -83,17 +83,21 @@ public final class SemQuestTree {
         /** no 侧自动生成模板（{yes}=判据原文；NoulSpec.autoNo 用）：noulNoHan=判据含汉字时、noulNoLatin=纯西文时。 */
         public final String noulNoHan;
         public final String noulNoLatin;
+        /** doc 过滤判据包裹模板（{yes}=doc 原文截断后）；唯一可选字段——null=doc 过滤禁用（旧部署零配置零影响）。 */
+        public final String docFilterCriterion;
 
         /**
          * 全字段必填（来自提示词文件内容，分野键继承已由 PromptLoader 完成）。
          * @param noulNoHan   no 侧模板（判据含汉字时；prompt.noul.no.han 文件内容）
          * @param noulNoLatin no 侧模板（纯西文判据时；prompt.noul.no.latin 文件内容）
+         * @param docFilterCriterion doc 过滤判据模板（prompt.docfilter.criterion 文件内容；null=禁用 doc 过滤）
          */
         public Prompts(String noulAddInstructions, String noulSearchInstructions,
                        String noulSearchCriterion, String noulAddCriterion, String noulSearchQuery,
                        String choiceAddRoot, String choiceAddNode,
                        String choiceSearchRoot, String choiceSearchNode,
-                       String choiceOtherOption, String noulNoHan, String noulNoLatin) {
+                       String choiceOtherOption, String noulNoHan, String noulNoLatin,
+                       String docFilterCriterion) {
             this.noulAddInstructions = req(noulAddInstructions, "prompt.noul.add.instructions");
             this.noulSearchInstructions = req(noulSearchInstructions, "prompt.noul.search.instructions");
             this.noulSearchCriterion = req(noulSearchCriterion, "prompt.noul.search.criterion");
@@ -106,6 +110,8 @@ public final class SemQuestTree {
             this.choiceOtherOption = req(choiceOtherOption, "prompt.choice.other");
             this.noulNoHan = req(noulNoHan, "prompt.noul.no.han");
             this.noulNoLatin = req(noulNoLatin, "prompt.noul.no.latin");
+            this.docFilterCriterion = docFilterCriterion == null || docFilterCriterion.trim().isEmpty()
+                    ? null : docFilterCriterion.trim();
         }
 
         /** 单字段严格校验：代码零内置文本，任一提示词缺失即拒绝构造。 */
@@ -137,6 +143,11 @@ public final class SemQuestTree {
             return noulSearchQuery.replace("{query}", query == null ? "" : query);
         }
 
+        /** doc 过滤判据包裹（{yes}=doc 原文截断后）；docFilterCriterion 为 null 时调用方不应发起过滤。 */
+        public String docFilterCriterion(String docText) {
+            return docFilterCriterion.replace("{yes}", docText == null ? "" : docText);
+        }
+
         /** choice 问句：根层用 root 问句，子层模板 {node} 替换层节点名。 */
         public String choiceQuestion(Task task, String node) {
             if ("ROOT".equals(node)) return task == Task.ADD ? choiceAddRoot : choiceSearchRoot;
@@ -159,7 +170,9 @@ public final class SemQuestTree {
                     && choiceSearchNode.equals(p.choiceSearchNode)
                     && choiceOtherOption.equals(p.choiceOtherOption)
                     && noulNoHan.equals(p.noulNoHan)
-                    && noulNoLatin.equals(p.noulNoLatin);
+                    && noulNoLatin.equals(p.noulNoLatin)
+                    && (docFilterCriterion == null ? p.docFilterCriterion == null
+                        : docFilterCriterion.equals(p.docFilterCriterion));
         }
 
         @Override
@@ -175,7 +188,8 @@ public final class SemQuestTree {
             h = h * 31 + choiceSearchNode.hashCode();
             h = h * 31 + choiceOtherOption.hashCode();
             h = h * 31 + noulNoHan.hashCode();
-            return h * 31 + noulNoLatin.hashCode();
+            h = h * 31 + noulNoLatin.hashCode();
+            return h * 31 + (docFilterCriterion == null ? 0 : docFilterCriterion.hashCode());
         }
     }
 
@@ -290,22 +304,30 @@ public final class SemQuestTree {
         /** true = 查询缓存直出（零模型调用，steps 为首次慢路轨迹的原样复放）；粘性——条目命中即置位。 */
         public boolean fast = false;
         public double pathScore = 1.0d;
+        // doc 过滤摘要：total=去重待过滤数；kept=过滤后保留数（未执行=0）；calls=判定批次数；
+        // confirmRequired=true 时 ranked 保持未过滤全量、结果不入缓存，等客户端确认后带 confirm 重发
+        public boolean confirmRequired = false;
+        public int docFilterTotal = 0;
+        public int docFilterKept = 0;
+        public int docFilterCalls = 0;
 
         QuestReport(String query) {
             this.query = query;
         }
     }
 
-    /** 命中文档：score = noul 模式为命中叶数；choice 模式为路径各层胜出概率连乘。 */
+    /** 命中文档：score = noul 模式为命中叶数；choice 模式为路径各层胜出概率连乘。docP = doc 过滤判定 P(相关)（未过滤恒 1.0）。 */
     public static final class RankedDoc {
         public final String docId;
         public final double score;
         public final List<String> viaLeaves;
+        public final double docP;
 
-        RankedDoc(String docId, double score, LinkedHashSet<String> viaLeaves) {
+        RankedDoc(String docId, double score, LinkedHashSet<String> viaLeaves, double docP) {
             this.docId = docId;
             this.score = score;
             this.viaLeaves = new ArrayList<String>(viaLeaves);
+            this.docP = docP;
         }
     }
 
@@ -336,6 +358,13 @@ public final class SemQuestTree {
     private final Map<String, Integer> questCacheHits = new LinkedHashMap<String, Integer>();
     /** 容量上限（0=关闭）；semquest.properties 的 questCacheSize 热载应用。仅内存，重启从零攒。 */
     private volatile int questCacheCap = 0;
+
+    /** doc 过滤组配置（quest 命中叶后的相关性出检；semquest.properties 热载应用，见 setDocFilter）。 */
+    private volatile boolean docFilterOn = false;      // 另须 prompt.docfilter.criterion 模板就位（Prompts）才实际生效
+    private volatile int docFilterBatch = 20;          // 单次打包判定条数
+    private volatile double docFilterGate = 0.6;       // P(相关) 采纳线
+    private volatile int docFilterMaxLen = 200;        // 判据里 doc 原文截断上限
+    private volatile int docFilterMaxDocs = 100;       // 单次 quest 待过滤总量上限（跨命中叶去重；超过需 confirm 确认）
 
     private SemQuestTree(SemNode root, DecisionBackend backend, double gate,
                          String ruleAdd, String ruleSearch) {
@@ -581,6 +610,15 @@ public final class SemQuestTree {
      * 查询缓存开启时同款查询（原文完全一致）零模型直返；任何表变更（add/grow/edit/remove/双门控）清空缓存。
      */
     public QuestReport quest(String query) throws IOException {
+        return quest(query, false);
+    }
+
+    /**
+     * 同上，confirm 仅在 doc 过滤开启且待过滤 doc 总量（跨命中叶去重）超过 docFilterMaxDocs 时有意义：
+     * 超量且 confirm=false → 返回 confirmRequired=true 的待确认响应（ranked 保持未过滤全量，不入缓存），
+     * 由客户端向用户确认花销后带 confirm=true 重发才执行过滤；总量未超时 confirm 被忽略。
+     */
+    public QuestReport quest(String query, boolean confirm) throws IOException {
         if (questCacheCap > 0) {
             QuestReport cached = questCache.get(query);
             if (cached != null) {
@@ -612,6 +650,40 @@ public final class SemQuestTree {
                 set.add(leaf.name);
             }
         }
+
+        // doc 级出检过滤：补齐判定链最后一环（叶命中 → 该叶哪条内容真正与查询相关，如「车」叶下只放行火车）。
+        // 跨命中叶去重后分批打包判定（每批一次调用），P(相关) ≥ docFilterGate 才保留；
+        // rule 用树级检索规则（过滤批次可能跨子树，节点级覆盖不展开——判据模板自带检索框架语义）。
+        LinkedHashMap<String, Double> docProbs = null;   // docId -> P(相关)；null = 未执行过滤（全保留）
+        if (docFilterOn && ps.docFilterCriterion != null && !via.isEmpty()) {
+            List<Doc> all = new ArrayList<Doc>(via.keySet());
+            rep.docFilterTotal = all.size();
+            if (all.size() > docFilterMaxDocs && !confirm) {
+                rep.confirmRequired = true;   // 花销过闸：等用户确认后客户端带 confirm=true 重发
+            } else {
+                docProbs = new LinkedHashMap<String, Double>();
+                for (int i = 0; i < all.size(); i += docFilterBatch) {
+                    List<Doc> batch = all.subList(i, Math.min(i + docFilterBatch, all.size()));
+                    LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
+                    for (Doc d : batch) {
+                        qs.put(d.id, new NoulSpec(d.id, ps.docFilterCriterion(truncateForFilter(d.content)),
+                                null, ps.noulNoHan, ps.noulNoLatin));
+                    }
+                    NoulReply r = backend.docFilter(query, ruleSearch, qs);
+                    rep.steps.add(new Step("DOC_FILTER", r));
+                    synchronized (this) {   // 过滤判定与下行判定共用树账单（并发安全同 ask）
+                        requests++;
+                        totalIn += r.inputTokens;
+                        totalOut += r.outputTokens;
+                        totalLatency += r.latencyMs;
+                        totalCost += r.cost;
+                    }
+                    rep.docFilterCalls++;
+                    docProbs.putAll(r.probs);
+                }
+            }
+        }
+
         List<Map.Entry<Doc, LinkedHashSet<String>>> entries =
                 new ArrayList<Map.Entry<Doc, LinkedHashSet<String>>>(via.entrySet());
         Collections.sort(entries, new Comparator<Map.Entry<Doc, LinkedHashSet<String>>>() {
@@ -621,11 +693,21 @@ public final class SemQuestTree {
             }
         });
         for (Map.Entry<Doc, LinkedHashSet<String>> e : entries) {
+            Double p = docProbs == null ? null : docProbs.get(e.getKey().id);
+            if (p != null && p < docFilterGate) continue;   // 过滤执行且明确不相关 → 不进结果；上游缺答（null）保留——宁可多给
             double s = choiceMode ? rep.pathScore : e.getValue().size();
-            rep.ranked.add(new RankedDoc(e.getKey().id, s, e.getValue()));
+            rep.ranked.add(new RankedDoc(e.getKey().id, s, e.getValue(), p == null ? 1.0d : p.doubleValue()));
+            if (docProbs != null) rep.docFilterKept++;
         }
-        if (questCacheCap > 0) cachePut(query, rep);
+        if (!rep.confirmRequired && questCacheCap > 0) cachePut(query, rep);
         return rep;
+    }
+
+    /** doc 原文截断：超过 docFilterMaxLen 取前缀加省略号（判据只求判定相关性，防长文撑爆单批）。 */
+    private String truncateForFilter(String content) {
+        if (content == null) return "";
+        String c = content.trim();
+        return c.length() <= docFilterMaxLen ? c : c.substring(0, docFilterMaxLen) + "…";
     }
 
     private void descendQuestChoice(SemNode node, String query, LinkedHashSet<SemNode> matched,
@@ -712,6 +794,19 @@ public final class SemQuestTree {
     public void setQuestCacheCap(int n) {
         this.questCacheCap = Math.max(0, n);
         while (questCache.size() > questCacheCap) cacheEvict();
+    }
+
+    /** doc 过滤组配置热载应用；任一值变化即清查询缓存（过滤口径变了旧报告不可信）并返回 true。实际过滤还须 Prompts.docFilterCriterion 就位。 */
+    public boolean setDocFilter(boolean on, int batch, double gate, int maxLen, int maxDocs) {
+        boolean changed = docFilterOn != on || docFilterBatch != batch || docFilterGate != gate
+                || docFilterMaxLen != maxLen || docFilterMaxDocs != maxDocs;
+        docFilterOn = on;
+        docFilterBatch = Math.max(1, batch);
+        docFilterGate = Math.min(1.0d, Math.max(0.0d, gate));
+        docFilterMaxLen = Math.max(1, maxLen);
+        docFilterMaxDocs = Math.max(1, maxDocs);
+        if (changed) bustQuestCache();
+        return changed;
     }
 
     // ── 公共 ────────────────────────────────────────────────────────

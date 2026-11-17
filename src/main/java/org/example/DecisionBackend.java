@@ -41,6 +41,18 @@ public interface DecisionBackend {
     NoulReply choice(String content, String rule, String question, LinkedHashMap<String, String> criteria)
             throws IOException;
 
+    /**
+     * doc 级出检过滤（quest 第三方言）：命中叶后对叶内内容逐条判定「与查询相关」。
+     * 形态复用 noul：content=查询原文（角色框架在判据模板里），每条 doc 一道题
+     * （instructions=docId 标签，yes=包裹后的相关性判据，no 侧自动生成）。
+     * 默认直接委托 {@link #noul}——wire 格式同款，jev/openrouter/bailian 无需各自实现；
+     * 想做专属优化（如百炼 ≤16 题拆批）可覆写。返回 docId -> P(相关)。
+     */
+    default NoulReply docFilter(String content, String rule, LinkedHashMap<String, NoulSpec> questions)
+            throws IOException {
+        return noul(content, rule, questions);
+    }
+
     /** 凭据是否就绪（选择/切换后端前检查）。 */
     default boolean hasKey() {
         return true;
