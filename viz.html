@@ -229,6 +229,13 @@
   .ext-track { flex: 0 0 220px; height: 6px; background: #232c3a; border-radius: 3px; overflow: hidden; }
   .ext-fill { height: 100%; width: 0%; background: #2dd4a7; border-radius: 3px; transition: width .4s ease; }
   .ext-txt { font-size: 12px; color: #8b98a9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 树体维护条（回收/体检/重写/批量生长四步循环；常驻显示缓冲水位摘要） */
+  #maintBar { display: none; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid #232c3a; background: #10161f; }
+  #maintBar .ext-track { flex: 0 0 180px; }
+  .maint-txt { flex: 1; font-size: 12px; color: #8b98a9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .maint-go { font-size: 12px; padding: 3px 10px; border-radius: 5px; border: 1px solid #2a3546; background: #141a24; color: #8fd4c0; cursor: pointer; white-space: nowrap; }
+  .maint-go:hover { background: #12241f; }
+  .maint-go:disabled { opacity: .45; cursor: default; }
 </style>
 </head>
 <body>
@@ -294,6 +301,11 @@
     <div id="extendBar">
       <div class="ext-track"><div class="ext-fill" id="extendFill"></div></div>
       <span class="ext-txt" id="extendTxt"></span>
+    </div>
+    <div id="maintBar">
+      <div class="ext-track"><div class="ext-fill" id="maintFill" style="background:#e8b64c"></div></div>
+      <span class="maint-txt" id="maintTxt"></span>
+      <button class="maint-go" id="maintGo" data-i18n="maint.go">🛠 立即维护</button>
     </div>
     <div class="panel-head">
       <span class="hint" data-i18n="tree.hint">左键点节点看详情（内部节点同时展开/收起） · 右键加 / 改 / 删 / 延伸节点</span>
@@ -366,6 +378,15 @@
       'extend.gen': ' · 生成 {gen} tok',
       'extend.rolled': ' · 回滚 {n} 枝',
       'extend.error': '延伸「{node}」失败：',
+      'maint.go': '🛠 立即维护',
+      'maint.idle': '🛠 树体维护：缓冲 {buf} 条 · {over} 层超阈值{frozen}',
+      'maint.frozen': ' · ❄ {n} 处冻结',
+      'maint.running': '🛠 维护中 · 第 {round} 轮 · {current}',
+      'maint.done': '🛠 维护完成：回收 {rc} · 重写 {rw} · 生长 {gw} · 生成 {gen} tok · {result}',
+      'maint.error': '🛠 维护失败：{result}',
+      'toast.maintStarted': '已提交维护任务 — 后台执行，可继续其他操作',
+      'toast.maintRunning': '维护任务进行中',
+      'toast.maintFail': '触发维护失败',
       'toast.extendStarted': '已开始延伸「{node}」— 后台执行，可继续其他操作',
       'toast.extendRunning': '「{node}」已在延伸中',
       'toast.extendFail': '触发延伸失败',
@@ -498,6 +519,15 @@
       'extend.gen': ' · {gen} gen tokens',
       'extend.rolled': ' · {n} rolled back',
       'extend.error': 'Extend "{node}" failed: ',
+      'maint.go': '🛠 Maintain now',
+      'maint.idle': '🛠 Tree maintenance: {buf} buffered · {over} over threshold{frozen}',
+      'maint.frozen': ' · ❄ {n} frozen',
+      'maint.running': '🛠 Maintaining · round {round} · {current}',
+      'maint.done': '🛠 Maintenance done: recycled {rc} · rewrites {rw} · grew {gw} · {gen} gen tok · {result}',
+      'maint.error': '🛠 Maintenance failed: {result}',
+      'toast.maintStarted': 'Maintenance submitted — running in background',
+      'toast.maintRunning': 'Maintenance already running',
+      'toast.maintFail': 'Failed to trigger maintenance',
       'toast.extendStarted': 'Extending "{node}" in background — you can keep working',
       'toast.extendRunning': '"{node}" is already extending',
       'toast.extendFail': 'Failed to trigger extend',
@@ -837,6 +867,7 @@
       $('#detail').style.display = 'none';
       showTab('detail');
       if (!extendTimer) pollExtend();   // 进表即接上延伸进度（水位自动触发的任务也能看到进度条）
+      if (!maintTimer) pollMaint();     // 进表即接上维护状态轮询（running 1s / idle 8s；启动补跑的任务也能看到）
     } catch (e) {
       toast(T('toast.openFail') + ': ' + e, true);
       location.hash = '#/';
@@ -1085,6 +1116,72 @@
   async function refreshAfterExtend(nodeName) {
     if (!nodeName) return;
     try { await refreshNode(nodeName); } catch (e) { /* 行不在视图内：忽略 */ }
+  }
+
+  // ── 树体维护条：状态/水位常驻显示（running 1s · idle 8s 轮询）+ 手动触发 ──
+  let maintTimer = null;
+
+  async function triggerMaint() {
+    const btn = $('#maintGo');
+    btn.disabled = true;
+    try {
+      const st = await apiSend(T0() + '/maint', 'POST', {});
+      toast(st.alreadyRunning ? T('toast.maintRunning') : T('toast.maintStarted'));
+      renderMaintBar(st);
+      if (!maintTimer) pollMaint();
+    } catch (e) {
+      toast(T('toast.maintFail') + ': ' + e, true);
+    }
+    btn.disabled = false;
+  }
+  $('#maintGo').onclick = triggerMaint;
+
+  async function pollMaint() {
+    if (!state.tid || $('#treePanel').style.display === 'none') { maintTimer = null; return; }
+    try {
+      const st = await api(T0() + '/maint');
+      renderMaintBar(st);
+      maintTimer = setTimeout(pollMaint, st.phase === 'running' ? 1000 : 8000);
+      return;
+    } catch (e) { /* 表已删除等：静默收 */ }
+    maintTimer = null;
+  }
+
+  function renderMaintBar(st) {
+    const bar = $('#maintBar');
+    if (!bar) return;
+    bar.style.display = 'flex';
+    const layers = st.layers || [];
+    const buf = layers.reduce((s, l) => s + (l.buffered || 0), 0);
+    const over = layers.filter(l => (l.buffered || 0) >= (l.threshold || 0)).length;
+    const frozen = (st.frozenLayers || []).length + (st.rewriteFails || []).length;
+    let txt;
+    if (st.phase === 'running') {
+      txt = Tf('maint.running', { round: st.round, current: st.current || '' });
+    } else if (st.phase === 'done') {
+      txt = Tf('maint.done', { rc: st.recycled, rw: st.rewrites, gw: st.grew, gen: (st.genIn || 0) + (st.genOut || 0), result: st.result || '' });
+    } else if (st.phase === 'error') {
+      txt = Tf('maint.error', { result: st.result || '' });
+    } else {
+      txt = Tf('maint.idle', { buf: buf, over: over, frozen: frozen ? Tf('maint.frozen', { n: frozen }) : '' });
+    }
+    $('#maintTxt').textContent = txt;
+    $('#maintGo').style.display = st.phase === 'running' ? 'none' : '';
+    if (st.phase !== 'running' && st.phase !== 'idle') refreshAllAfterMaint();   // 维护动过树：整树重载
+  }
+
+  async function refreshAllAfterMaint() {
+    if (!state.tid || $('#treePanel').style.display === 'none') return;
+    try {
+      const t = await api(T0() + '/tree');
+      state.mode = t.mode;
+      renderStats(t);
+      state.containers = {};
+      state.wraps = {};
+      const box = $('#tree');
+      box.innerHTML = '';
+      box.appendChild(buildRow(t.root, 0));   // 保留 state.expanded：维护不改展开状态
+    } catch (e) { /* 静默 */ }
   }
 
   let menuEl = null;

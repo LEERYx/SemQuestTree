@@ -136,11 +136,11 @@
 
 落位：一条语料沿判据树下行落进叶。**入参** `{content, id?}`：`id` 缺省自动生成 `U-<36进制时间戳>`；**同 id 重落 = 替换旧落位**（先摘旧指针再落位）。
 
-**数据驱动生长**（`growth.enabled=true` 时）：本条落位全为兜底（树里没有能承接这条内容的类别，含空树根叶）→ 服务端按**本条内容**调生成模型提出 ≤`growth.maxNew` 个新分支逐个验收入树；任一收编即响应 `leaves` 换为新枝、记 grown（auto 标记，重启零模型回放）并挂 `growthStep`；全部未收编则分支当场回滚、本条留在原兜底叶数据不丢。生成模型经 `growth.model` 配置、生长提示词经 `growth.prompt`（键值=提示词文件路径，`prompts/` 目录一文件一提示词，构造时读取；缺失/空白 → 本步放弃，原因写进 `growthStep.failed`，均可热载、装载失败保留旧值）；思考型模型可用 `growth.thinking`（none/low/medium/high）+ `growth.maxTokens` 压住输出量——该次生成占 add 总耗时九成以上，实测 qwen3.7-flash 由 38.6s 降到 5.7s（生成 3066 → 122 token）。失败原因（该层分支已满 / 缺 openrouter 凭据 / 生长提示词装载失败 / 生成调用失败）也写进 `growthStep.failed`。
+**数据驱动生长（兜底缓冲批量生长）**（`growth.enabled=true` 时）：本条落位全为兜底（树里没有能承接这条内容的类别，含空树根叶）→ **落兜底即积压**，不阻塞本请求；各层兜底积压 ≥ 阈值（ROOT 层 `growth.bufferRoot`=30，其余层 `growth.bufferMin`=5）→ 提交后台维护任务批量生长：一次快照 ≤`growth.samples` 条积压样本（均匀抽样）调生成模型（`growth.model` / `growth.prompt`，模板 `{attempts}` 占位符仅在存在失败记忆时注入历史尝试段——无失败零开销，不占 token）产出 ≤`growth.maxNew` 个新分支逐个验收——结构入树（零模型）→ 受影响存量逐条重判过门迁入 → 积压快照样本收编数 ≥ `growth.acceptMin` 保留（记 grown auto 标记），否则 undoGrow 原位回滚；全部回滚该层冻结入失败记忆，兜底样本换血过半自动解冻（携带新证据重试）。全程后台单工执行（模型调用不持表锁），add 响应即时返回。
 
 **节点延伸（深度生长）**：落位叶存量超过水位（`growth.splitAt × growth.splitFactor`，默认 255×0.7=178）时自动提交后台延伸任务——把拥挤叶串行拆细出下一层（不阻塞本请求），详见下方 `/extend`。
 
-**出参**：`meta` + `{id, leaves(生长收编后为新枝), steps, growthStep?, stats}`。`growthStep`：`{parent, genTokens, genInTokens, genOutTokens, genMs, kept(收编保留数), branches:[{name, yes, prob(验收 P)}], failedBranches(已回滚分支), failed(放弃原因)}`。
+**出参**：`meta` + `{id, leaves, steps, stats}`。落兜底 = 积压进兜底叶（`leaves` 含 `X_OTHER` / 空树根叶），后续由维护任务批量消化；不再有同步 `growthStep` 字段（旧版落兜底同步生长已改为后台批量）。
 
 **错误**：400 缺 content / JSON 非法；502 判定调用失败（超时、上游报错）。
 
@@ -148,7 +148,7 @@
 
 批量导入：`docs` 里每条独立落位，**单条失败不牵连整批**，全部结束后统一落盘一次。**入参** `{docs:[{id?, content}…]}`，单次上限 500 条（超出 400）；条目缺 `content` 记入 `failed` 继续。
 
-**出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves, steps, growthStep?}], stats}`——每条独立触发数据驱动生长（同 add，卡片挂在该条行下）。
+**出参**：`meta` + `{total, added, failed:[{index, id?, error}], results:[{id, leaves, steps}], stats}`——落兜底条目同样积压进兜底叶，达阈值由维护任务批量消化（同 add，响应不再有 `growthStep`）。
 
 **错误**：400 缺 docs / docs 空 / 超 500 条；单条判定失败进 `failed` 而非整体报错。
 
@@ -158,9 +158,25 @@
 
 ### POST /api/t/&lt;id&gt;/extend [模型]
 
-手动触发节点延伸：`{node}` 对该节点后台串行拆细——**手动触发即强制拆细，不受水位限制**（水位仅作用于自动触发）；每轮「快照 → 生成 1 个更细子类 （层级无关模板 `growth.extend.prompt`，`{parentYes}` 约束子类比父类细一层）→ 入 树 → 该节点存量逐条重判过门迁入 → 基于最新树状态下一轮」，直至存量不足 2 条 / 生成器 返回空（无更细区分）/ 达 `growth.extend.maxNew`；轮内零收编整枝回滚（undoGrow 零模型）。全程后台单工执行（模型调用不持表锁），add/quest 照常并行；`growth.enabled` 或 `growth.extend` 关闭时任务即停。仅 noul 表（choice 表 400）；对兜底叶触发 400（请对其父节点触发）；节点无存量 400。提示词层级无关：不写死「第几层」，2、3、4…层同一模板递 复用。
+手动触发节点延伸：`{node}` 对该节点后台串行拆细——**手动触发即强制拆细，不受水位限制**（水位仅作用于自动触发）；每轮「快照 → 生成 1 个更细子类（层级无关模板 `growth.extend.prompt`，`{parentYes}` 约束子类比父类细一层，模板 `{attempts}` 占位符仅在存在失败记忆时注入上次零收编/无区分证据——生成器知道上次为什么失败，下次有改进方向而非重开盲盒）→ 入树 → 该节点存量逐条重判过门迁入 → 基于最新树状态下一轮」，直至存量不足 2 条 / 生成器返回空（无更细区分）/ 达 `growth.extend.maxNew`；轮内零收编整枝回滚（undoGrow 零模型）且失败证据入档 `maintState.extendFails`（下次生成带上）。全程后台单工执行（模型调用不持表锁），add/quest 照常并行；`growth.enabled` 或 `growth.extend` 关闭时任务即停。仅 noul 表（choice 表 400）；对兜底叶触发 400（请对其父节点触发）；节点无存量 400。提示词层级无关：不写死「第几层」，2、3、4…层同一模板递复用。
 
 **出参**：202 `状态快照 + alreadyRunning:false`（已受理）；200 `alreadyRunning:true`（已在跑，幂等）。**错误**：400 缺 node / 节点不存在 / 兜底叶 / 节点无存量 / choice 表。
+
+### GET /api/t/&lt;id&gt;/maint [免费]
+
+维护任务状态全景（viz 维护面板轮询；内存态现算，不落盘）。**出参**：
+
+- 任务快照（同 ExtendStatus 风格）：`{phase(idle/running/done/error), round(本任务已完成轮数), audits(累计体检分支数), rewrites(累计重写成功数), recycled(累计摘枝数), grew(累计生长保留枝数), genIn, genOut, current(当前动作文案), result(结束原因/错误), startedAt, finishedAt}`
+- `layers:[{layer, buffered(兜底积压条数), threshold(触发阈值)}]`——各层水位；buffered ≥ threshold 的层待消化
+- `frozenLayers:[{layer, rounds, note}]`——生长失败记忆冻结中的层（解冻=兜底样本换血过半）
+- `rewriteFails:[{branch, fails, keepRate, note}]`——重写失败记忆冻结中的分支（解冻=分支新收编数超冻结时基数）
+- `stats`——判定账单一行文案
+
+### POST /api/t/&lt;id&gt;/maint [模型]
+
+手动触发一轮树体维护（回收扫描 / 判据体检 / 判据重写 / 兜底批量生长，与积压自动触发同链路；后台单工执行，与延伸任务排队互斥，模型调用不持表锁）。running 中幂等。任务每轮：①回收（零收编且过 `growth.recycleProtect` 保护期的枝摘除）②体检（轮转 `growth.auditBatch` 个分支，最近最久未体检优先；人工 editNode 过的分支只报告不自动重写）③重写验收（mock/模型体检提案 → 旧成员保住率 ≥ `growth.refineKeep` 门限 + 层兜底同类吸入）④批量生长（详见 add）。单任务最多 `growth.maintRounds` 轮，收工自查有积压继续排队消化；启动时各表积压达阈值的直接补跑。
+
+**出参**：202 `maintMap + alreadyRunning:false`（已受理）；200 `alreadyRunning:true`（幂等）。**错误**：405 非 GET/POST。
 
 ### POST /api/t/&lt;id&gt;/quest [模型]
 

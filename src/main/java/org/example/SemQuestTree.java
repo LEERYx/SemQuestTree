@@ -873,6 +873,40 @@ public final class SemQuestTree {
         return out;
     }
 
+    /** 全树真实分支清单（维护编排用）：DFS 序，每项 {parent, name, yes 判据（空回名字）}；不含兜底叶。 */
+    public List<String[]> branchList() {
+        List<String[]> out = new ArrayList<String[]>();
+        collectBranches(root, out);
+        return out;
+    }
+
+    private void collectBranches(SemNode n, List<String[]> out) {
+        for (SemNode c : n.children) {
+            out.add(new String[]{n.name, c.name, c.yes == null || c.yes.trim().isEmpty() ? c.name : c.yes});
+            collectBranches(c, out);
+        }
+    }
+
+    /**
+     * 全部生长层清单（维护编排用）：DFS 序每项 {层名, 兜底积压条数}，ROOT 在首。
+     * 内部层的积压 = 其兜底叶条数（生长只消化兜底）；空树根叶（ROOT 本身是叶）的积压 = ROOT 直挂数。
+     */
+    public List<String[]> layerList() {
+        List<String[]> out = new ArrayList<String[]>();
+        if (root.isLeaf()) {
+            out.add(new String[]{root.name, String.valueOf(root.docs.size())});   // 空树：ROOT 即积压池
+            return out;
+        }
+        collectLayers(root, out);
+        return out;
+    }
+
+    private void collectLayers(SemNode n, List<String[]> out) {
+        if (n.isLeaf()) return;   // 纯叶无生长空间（ROOT 叶形态由 layerList 入口特判）
+        out.add(new String[]{n.name, String.valueOf(n.otherLeaf != null ? n.otherLeaf.docs.size() : 0)});
+        for (SemNode c : n.children) collectLayers(c, out);
+    }
+
     /** 全树结构 → 可 JSON 化的 Map（含每叶 docCount，不含正文——正文点击才查）。 */
     public Map<String, Object> treeMap() {
         LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
@@ -1034,6 +1068,25 @@ public final class SemQuestTree {
         }
     }
 
+    /**
+     * 结构生长快照（维护批量生长用）：growSeed 的返回值——落枝已入树，affected 为受影响存量的
+     * {docId, content} 快照，供编排层锁外重判（模型调用不持表锁）；rule 为重判沿用的有效规则。
+     * undoGrow 可整枝回滚（含半程迁移的存量还原）。
+     */
+    public static final class GrowSeed {
+        public final String parent;
+        public final String node;
+        public final List<String[]> affected;
+        public final String rule;
+
+        GrowSeed(String parent, String node, List<String[]> affected, String rule) {
+            this.parent = parent;
+            this.node = node;
+            this.affected = affected;
+            this.rule = rule;
+        }
+    }
+
     /** 纯结构增长（零模型调用）：在 parent 下追加判断节点；回放持久化增长记录用。 */
     public SemNode addNode(String parent, String name, String yes, String no) {
         SemNode p = find(root, parent);
@@ -1135,10 +1188,41 @@ public final class SemQuestTree {
     }
 
     /**
+     * 结构生长快照（维护批量生长用，零模型调用）：addNode 落枝 + 返回受影响存量的 {docId, content}
+     * 快照供编排层锁外重判——与 growNode 同口径但重判外置（模型调用不持表锁）：
+     * 父为叶（分化）→ affected=父叶直挂数；父为内部节点（挂靠）→ affected=父层兜底叶数。
+     * no 判据传 null 由判定模板自动生成（仅 noul）；undoGrow 可整枝回滚（含半程迁移的存量还原）。
+     */
+    public GrowSeed growSeed(String parent, String name, String yes, String no) {
+        final Prompts ps = promptsOrThrow();   // no 侧自动生成需要模板（prompt.noul.no.* 提示词文件）
+        bustQuestCache();   // 结构变了，查询缓存全部作废
+        if (!choiceMode && (yes == null || yes.trim().isEmpty())) {
+            throw new IllegalArgumentException("yes 判据不可为空");
+        }
+        String yesT = yes != null ? yes.trim() : "";
+        String noT = choiceMode
+                ? (no != null && !no.trim().isEmpty() ? no.trim() : null)
+                : (no != null && !no.trim().isEmpty() ? no.trim() : NoulSpec.autoNo(yesT, ps.noulNoHan, ps.noulNoLatin));
+        SemNode p = find(root, parent);
+        if (p == null) throw new IllegalArgumentException("父节点不存在: " + parent);
+        String effRule = effectiveRuleOf(p);   // 父所在子树若有规则覆盖（如中文子树），重判沿用它
+        boolean differentiate = p.isLeaf();
+        List<Doc> affectedDocs = new ArrayList<Doc>(differentiate ? p.docs
+                : (p.otherLeaf != null ? p.otherLeaf.docs : new ArrayList<Doc>()));
+        SemNode target = addNode(parent, name, yesT.isEmpty() ? null : yesT, noT);
+        List<String[]> affected = new ArrayList<String[]>();
+        for (Doc d : affectedDocs) {
+            affected.add(new String[]{d.id, d.content});
+        }
+        return new GrowSeed(parent, target.name, affected, effRule);
+    }
+
+    /**
      * 生长回滚（growNode 的逆操作，零模型调用）：删掉刚长出的分支，把其收编的存量放回原位。
      * 本枝为父层唯一实子（父层原为叶，分化路径）→ 收编存量连同分化新建的兜底叶存量全部还原到父叶本身，
      * 父层回叶形态（空兜底叶连带撤掉）；否则（挂靠回填路径）→ 收编存量还原到父层兜底叶。
-     * 与 removeNode 不同：不删任何文档、不受「兜底叶仍有落位」护栏限制（专为生长验收回滚用）。
+     * 与 removeNode 不同：不删任何文档、不受「兜底叶仍有落位」护栏限制。
+     * 两处共用：生长验收回滚（收编不足还原存量）与维护回收（零收编枝=纯摘枝零迁移）。
      */
     public void undoGrow(String parentName, String nodeName) {
         bustQuestCache();   // 结构变了，查询缓存全部作废
@@ -1285,6 +1369,31 @@ public final class SemQuestTree {
             }
         }
         return ruleAdd;
+    }
+
+    /** 节点所在子树的有效 add 规则（维护重写验收的判定口径，与 growNode/planExtend 同款）：无覆盖回树级默认。 */
+    public String effectiveRuleOf(String nodeName) {
+        SemNode n = find(root, nodeName);
+        return n == null ? ruleAdd : effectiveRuleOf(n);
+    }
+
+    /**
+     * 判据重写（维护任务验收通过后的落树）：替换分支 yes/no 判据，零模型调用。
+     * 结构与落位指针不动——旧成员按旧判据收编、新判据的重判迁移由维护编排负责（judgeOne+moveJudged）；
+     * no 留空按语言自动生成否定侧。判定语义变了 → 查询缓存全部作废。
+     */
+    public void rewriteNode(String name, String yes, String no) {
+        if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("节点名不可为空");
+        if (root.name.equals(name.trim())) throw new IllegalArgumentException("根节点无判据可重写");
+        SemNode n = find(root, name.trim());
+        if (n == null) throw new IllegalArgumentException("节点不存在: " + name);
+        if (n.other) throw new IllegalArgumentException("兜底叶无判据可重写");
+        if (yes == null || yes.trim().isEmpty()) throw new IllegalArgumentException("yes 判据不可为空");
+        final Prompts ps = promptsOrThrow();   // no 侧自动生成需要模板（prompt.noul.no.* 提示词文件）
+        String yesT = yes.trim();
+        n.yes = yesT;
+        n.no = no != null && !no.trim().isEmpty() ? no.trim() : NoulSpec.autoNo(yesT, ps.noulNoHan, ps.noulNoLatin);
+        bustQuestCache();   // 判定语义变了，缓存里的旧报告全部作废
     }
 
     /**
