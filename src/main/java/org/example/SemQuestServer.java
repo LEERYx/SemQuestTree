@@ -1,5 +1,7 @@
 package org.example;
 
+import com.sun.net.httpserver.Filter;
+import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -24,7 +26,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -54,9 +55,6 @@ import java.util.concurrent.ThreadFactory;
  *   GET  /api/t/&lt;id&gt;/extend   → 节点延伸状态（viz 进度条轮询；phase: idle/running/done/error）
  *   POST /api/t/&lt;id&gt;/extend   → 手动触发 {node}：后台串行拆细该节点（与水位 growth.splitAt×
  *                               growth.splitFactor 自动触发同链路），不阻塞 add/quest
- *   GET  /api/t/&lt;id&gt;/maint    → 维护任务状态 + 各层兜底水位 + 失败记忆快照（viz 维护面板轮询）
- *   POST /api/t/&lt;id&gt;/maint    → 手动触发一轮维护（回收/体检/重写/兜底批量生长，后台执行；
- *                               兜底积压达阈值的自动触发同链路），不阻塞 add/quest
  *   POST /api/t/&lt;id&gt;/quest    → 查询 {query}：与节点名完全一致时直接返回该节点子树内容（零模型）；
  *                                  否则自然语言检索，返回命中叶 + 排序文档 + 判定轨迹
  *   GET  /api/models          → 决策模型列表 ?provider=mock|jev|openrouter|bailian（上游零 token 元数据；
@@ -79,11 +77,10 @@ public final class SemQuestServer {
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
-    /** 延伸与维护共用全局单工线程池（daemon）：都是重整理（分钟级），全局串行排队足够——
-     *  同表延伸/维护绝不并发动树，多表任务不互抢生成模型资源。 */
-    private static final ExecutorService MAINT_POOL = Executors.newSingleThreadExecutor(new ThreadFactory() {
+    /** 延伸任务全局单工线程池（daemon）：延伸是重整理（分钟级），全局串行排队足够，多表任务不互抢资源。 */
+    private static final ExecutorService EXTEND_POOL = Executors.newSingleThreadExecutor(new ThreadFactory() {
         public Thread newThread(Runnable r) {
-            Thread th = new Thread(r, "semquest-maint");
+            Thread th = new Thread(r, "semquest-extend");
             th.setDaemon(true);
             return th;
         }
@@ -154,32 +151,35 @@ public final class SemQuestServer {
                 t.tree.setQuestCacheCap(qcInit);
             }
         }
-        // doc 过滤组配置铺到全部表（on/批次/门控/截断/总量上限；模板未配置时树内自动不生效）
-        for (Table t : tables.values()) {
-            synchronized (t) {
-                applyDocFilter(cfg, t.tree);
-            }
-        }
         // 判定提示词铺到全部表（装载已在上文 fail-fast 完成）
         for (Table t : tables.values()) {
             synchronized (t) {
                 t.tree.setPrompts(promptsInit);
             }
         }
-        // 启动补跑：重启前未消化的兜底积压继续消化（各层积压达阈值 → 提交后台维护任务，全局单工排队）
-        for (Table t : tables.values()) {
-            synchronized (t) {
-                maybeSubmitMaint(t, cfg, backend, gstate);
-            }
-        }
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        server.createContext("/", new StaticHandler(vizFile));
-        server.createContext("/api/tables", new TablesHandler(tables, cfg, backend, tablesDir));
-        server.createContext("/api/t/", new TableRouter(tables, cfg, backend, gstate));
-        server.createContext("/api/models", new ModelsHandler(cfg, sel, timeoutMs));
-        server.createContext("/api/model", new ModelHandler(cfg, backend, sel));
-        server.createContext("/api/growth", new GrowthHandler(cfg, gstate, timeoutMs));
+        // CORS 放行：监控页以 file:// 打开，浏览器跨源调用（含 DELETE 前的 OPTIONS 预检）需显式应答
+        Filter cors = new Filter() {
+            public String description() { return "CORS 放行"; }
+            public void doFilter(HttpExchange x, Chain chain) throws IOException {
+                x.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+                x.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+                x.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+                if ("OPTIONS".equalsIgnoreCase(x.getRequestMethod())) {
+                    x.sendResponseHeaders(204, -1);
+                    return;
+                }
+                chain.doFilter(x);
+            }
+        };
+        HttpContext c0 = server.createContext("/", new StaticHandler(vizFile));
+        HttpContext c1 = server.createContext("/api/tables", new TablesHandler(tables, cfg, backend, tablesDir));
+        HttpContext c2 = server.createContext("/api/t/", new TableRouter(tables, cfg, backend, gstate));
+        HttpContext c3 = server.createContext("/api/models", new ModelsHandler(cfg, sel, timeoutMs));
+        HttpContext c4 = server.createContext("/api/model", new ModelHandler(cfg, backend, sel));
+        HttpContext c5 = server.createContext("/api/growth", new GrowthHandler(cfg, gstate, timeoutMs));
+        for (HttpContext c : new HttpContext[]{ c0, c1, c2, c3, c4, c5 }) c.getFilters().add(cors);
         server.setExecutor(Executors.newFixedThreadPool(4));
         server.start();
         System.out.println("问义树可视化服务已启动: http://localhost:" + port
@@ -236,14 +236,6 @@ public final class SemQuestServer {
                             }
                             System.out.println("[热载] 表「" + t.name + "」查询缓存容量 → "
                                     + (qc == 0 ? "关闭" : qc));
-                        }
-                        // doc 过滤组热载（on/批次/门控/截断/总量上限；setDocFilter 值变化时内部清查询缓存）
-                        for (Table t : tables.values()) {
-                            synchronized (t) {
-                                if (applyDocFilter(cfg, t.tree)) {
-                                    System.out.println("[热载] 表「" + t.name + "」doc 过滤配置 → 已更新");
-                                }
-                            }
                         }
                         // 提示词热载：全部来自提示词文件；装载失败（路径未配置/文件不可读/空白）即保留旧值
                         SemQuestTree.Prompts np = null;
@@ -334,8 +326,6 @@ public final class SemQuestServer {
         final List<Map<String, Object>> edits;
         volatile SemQuestTree tree;   // --reseed 时 schema 重建整体替换
         final ExtendStatus extend = new ExtendStatus();   // 延伸任务状态（内存态不落盘，viz 进度条轮询）
-        final MaintStatus maint = new MaintStatus();      // 维护任务状态（内存态不落盘，viz 进度条轮询）
-        final MaintState maintState = new MaintState();   // 代谢失败记忆（内存态不落盘，重启归零）
 
         Table(String id, String name, String note, long createdAt, boolean demo,
               SemQuestTree tree, Path file,
@@ -388,72 +378,6 @@ public final class SemQuestServer {
                 m.put("finishedAt", finishedAt);
                 return m;
             }
-        }
-
-        /** 维护任务状态（内存态，不落盘，重启归零）：viz 轮询用。phase: idle/running/done/error。 */
-        static final class MaintStatus {
-            volatile String phase = "idle";
-            volatile int round;          // 本任务已完成轮数
-            volatile int audits;         // 累计体检分支数
-            volatile int rewrites;       // 累计判据重写成功数
-            volatile int recycled;       // 累计摘枝数
-            volatile int grew;           // 累计生长保留枝数
-            volatile int genIn;          // 累计生成 tokens in
-            volatile int genOut;         // 累计生成 tokens out
-            volatile String current = "";  // 当前动作文案
-            volatile String result;        // 结束原因 / 错误信息
-            volatile long startedAt;
-            volatile long finishedAt;
-
-            LinkedHashMap<String, Object> snapshot() {
-                LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
-                m.put("phase", phase);
-                m.put("round", round);
-                m.put("audits", audits);
-                m.put("rewrites", rewrites);
-                m.put("recycled", recycled);
-                m.put("grew", grew);
-                m.put("genIn", genIn);
-                m.put("genOut", genOut);
-                m.put("current", current);
-                m.put("result", result);
-                m.put("startedAt", startedAt);
-                m.put("finishedAt", finishedAt);
-                return m;
-            }
-        }
-
-        /**
-         * 代谢失败记忆（内存态，不落盘，重启归零）：三类「重新生成」的失败证据——下次生成以 {attempts}
-         * 段带回，让模型吸取教训而非开盲盒重抽。解冻统一规则：证据变了才许再试（生长=兜底样本换血过半；
-         * 重写=分支有新收编），无新证据维持冻结。
-         */
-        static final class MaintState {
-            int age;                                                                            // 全局轮计数（出生保护期对照）
-            final Map<String, Integer> branchBorn = new LinkedHashMap<String, Integer>();       // 分支 → 出生轮
-            final Map<String, Integer> lastAudit = new LinkedHashMap<String, Integer>();        // 分支 → 最近体检轮
-            final Map<String, GrowFail> growthFails = new LinkedHashMap<String, GrowFail>();    // 层 → 生长失败（冻结中）
-            final Map<String, RewriteFail> rewriteFails = new LinkedHashMap<String, RewriteFail>();  // 分支 → 重写失败
-            final Map<String, String> extendFails = new LinkedHashMap<String, String>();        // 节点 → 上次延伸零收编结论
-            final Map<String, Integer> recycleStreak = new LinkedHashMap<String, Integer>();    // 层 → 连续摘枝数（防抖）
-        }
-
-        /** 兜底生长失败记忆（层粒度）：最近一次提案 + 参与验收的积压样本 id 集（解冻换血判定）+ 失败轮次与结论。 */
-        static final class GrowFail {
-            final List<String[]> proposals = new ArrayList<String[]>();   // 最近一次提案 [{name, yes}]
-            final Set<String> sampleIds = new HashSet<String>();
-            int rounds;
-            String note;
-        }
-
-        /** 判据重写失败记忆（分支粒度）：上次提案与保住率；连续 fails≥2 冻结，解冻=分支新收编数超过 frozenAtDocs。 */
-        static final class RewriteFail {
-            String proposedYes;
-            double keepRate;
-            final List<String> kicked = new ArrayList<String>();   // 被踢旧成员「id: 内容截断」（≤10 条）
-            int fails;
-            int frozenAtDocs;
-            String note;
         }
     }
 
@@ -753,7 +677,6 @@ public final class SemQuestServer {
                             PromptLoader.rule(cfg, "prompt.rule.add"),
                             PromptLoader.rule(cfg, "prompt.rule.search"));
                     tree.setQuestCacheCap(Math.max(0, cfg.getInt("questCacheSize", 256)));
-                    applyDocFilter(cfg, tree);
                     tree.setPrompts(PromptLoader.of(cfg));
                     Table t = new Table(id, name, note, System.currentTimeMillis(), false, tree,
                             tablesDir.resolve(id + ".json"),
@@ -886,8 +809,6 @@ public final class SemQuestServer {
                 new AddBatchHandler(cfg, backend, gstate).handle(t, ex);
             } else if ("extend".equals(action)) {
                 new ExtendHandler(cfg, backend, gstate).handle(t, ex);
-            } else if ("maint".equals(action)) {
-                new MaintHandler(cfg, backend, gstate).handle(t, ex);
             } else if ("doc".equals(action)) {
                 new DocHandler().handle(t, ex);
             } else {
@@ -1363,566 +1284,155 @@ public final class SemQuestServer {
         }
     }
 
-    // ── 树体代谢维护（add/addBatch 落兜底积压触发）：回收 → 体检 → 重写 → 批量生长 ──
+    // ── 数据驱动生长（add/addBatch 落兜底触发） ───────────────────────
 
     /**
-     * 积压检查（表锁内调用）：全树各生长层的兜底积压达阈值（ROOT 层用 growth.bufferRoot 首批骨架规划，
-     * 其余层用 growth.bufferMin）→ 提交后台维护任务；running 中幂等忽略。add/addBatch 落位后与启动补跑共用。
+     * 落兜底同步生长：add 落位全为兜底叶（或空树根叶）→ 树里没有能承接这条内容的类别，
+     * 生成器按本条内容为断路层提出 ≤growth.maxNew 个新分支 → 逐个 growNode 入树（自带存量重判，
+     * 从 GrowReport.moves 查本条是否收编）→ 未收编 undoGrow 原位回滚（不删文档，存量还原原位）；
+     * 任一收编即响应 leaves 换为新枝、记 grown auto（回放零模型）并挂 growthStep。
+     * 全程在表锁内（TableRouter 已 synchronized(t)）；生成模型 mock 判定链路走 MockGenerator（零 token），
+     * 真实链路走 openrouter chat completions（growth.model，凭据复用 openrouter.apikey，
+     * 生成提示词经 growth.prompt 键指向的提示词文件（构造时读取，缺失/空白记 growthStep.failed）；
+     * growth.maxTokens / growth.thinking 限住思考型模型的输出量，
+     * 把本步的墙钟耗时从几十秒压到几秒）。失败原因也写进 growthStep。
      */
-    private static void maybeSubmitMaint(Table t, Config cfg, SwitchableBackend backend, GrowthState gstate) {
+    private static void growOnFallback(Table t, String docId, String content,
+                                        SemQuestTree.AddReport rep, Map<String, Object> out,
+                                        Config cfg, SwitchableBackend backend, GrowthState gstate) throws IOException {
         if (!growthEnabledOf(cfg, gstate)) return;
-        if ("running".equals(t.maint.phase)) return;
-        int rootThreshold = cfg.getInt("growth.bufferRoot", 30);
-        int layerThreshold = cfg.getInt("growth.bufferMin", 5);
-        List<String[]> layers = t.tree.layerList();   // ROOT 在首
-        for (int i = 0; i < layers.size(); i++) {
-            int threshold = i == 0 ? rootThreshold : layerThreshold;
-            if (Integer.parseInt(layers.get(i)[1]) >= threshold) {
-                submitMaint(t, cfg, backend, gstate);
+        // 触发判定：落位全为兜底叶，或空树根叶（ROOT 本身是叶 = 还没有任何分支）
+        Map<String, Object> rootLv = t.tree.nodeLevel(null);
+        String rootName = rootLv == null ? null : String.valueOf(rootLv.get("name"));
+        boolean rootIsLeaf = rootLv != null && Boolean.TRUE.equals(rootLv.get("leaf"));
+        String fb = null;        // 触发落位（兜底叶或根叶）
+        String parent = null;    // 断路层（新枝挂靠层）
+        for (String leaf : rep.leaves) {
+            if (leaf.endsWith(SemQuestTree.OTHER_SUFFIX)) {
+                fb = leaf;
+                parent = leaf.substring(0, leaf.length() - SemQuestTree.OTHER_SUFFIX.length());
+            } else if (rootIsLeaf && leaf.equals(rootName)) {
+                fb = leaf;    // 空树根叶：内容落在了还没有分支的 ROOT 上
+                parent = leaf;
+            } else {
+                return;    // 落位里有真实承接叶 → 树里已有这类类别，不生长
+            }
+        }
+        if (fb == null) return;
+        List<String[]> siblings = t.tree.branchView(parent);
+        if (siblings == null) return;
+        int maxBranches = cfg.getInt("growth.maxBranches", 12);
+        if (siblings.size() >= maxBranches) {   // 护栏：层满不长，防炸树
+            growthStep(out, parent, 0, 0, 0, 0, null, null, "该层分支已满（growth.maxBranches=" + maxBranches + "）");
+            return;
+        }
+        // 生成器：mock 判定链路配 MockGenerator（零 token E2E）；真实链路 openrouter chat
+        CriterionGenerator gen;
+        if ("mock".equals(backend.name())) {
+            gen = new CriterionGenerator.MockGenerator();
+        } else {
+            String apiKey = cfg.get("openrouter.apikey", null);
+            if (apiKey == null || apiKey.trim().isEmpty()) {
+                growthStep(out, parent, 0, 0, 0, 0, null, null, "缺 openrouter 凭据，无法生成判据");
+                return;
+            }
+            try {
+                gen = new CriterionGenerator.OpenRouterGenerator(
+                        cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
+                        growthModelOf(cfg, gstate),
+                        apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
+                        cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null), null);
+            } catch (IllegalStateException e) {
+                // 提示词文件装载失败：不外抛，记入 growthStep.failed（与生成失败同路径）
+                growthStep(out, parent, 0, 0, 0, 0, null, null, "生长提示词装载失败: " + e.getMessage());
                 return;
             }
         }
-    }
-
-    /** 提交维护任务（表锁内调用）：running 中幂等忽略；重置状态后交后台单工池（与延伸任务排队互斥）。 */
-    private static void submitMaint(final Table t, final Config cfg, final SwitchableBackend backend, final GrowthState gstate) {
-        Table.MaintStatus st = t.maint;
-        if ("running".equals(st.phase)) return;
-        st.phase = "running";
-        st.round = 0;
-        st.audits = 0;
-        st.rewrites = 0;
-        st.recycled = 0;
-        st.grew = 0;
-        st.genIn = 0;
-        st.genOut = 0;
-        st.current = "排队中…";
-        st.result = null;
-        st.startedAt = System.currentTimeMillis();
-        st.finishedAt = 0;
-        MAINT_POOL.execute(new Runnable() {
-            public void run() {
-                maintTask(t, cfg, backend, gstate);
-            }
-        });
-    }
-
-    /**
-     * 维护任务体（后台单工线程，与延伸任务排队互斥）：每轮「回收扫描（零模型）→ 判据体检（轮转限额）→
-     * 重写验收（体检命中才走）→ 兜底批量生长（各层独立）」。模型调用全程不持表锁，锁段只包结构变更、
-     * 指针移动与落盘——add/quest 照常并行（大脑夜间加固，白天照常运转）。
-     * 单任务轮数上限 growth.maintRounds（默认 4），收工前再查一遍积压，仍达标（有未冻结层）则重新提交
-     * 续跑，避免一次任务占死单工池饿死延伸。失败证据全程记入 MaintState，下次生成以 {attempts} 带回。
-     */
-    private static void maintTask(final Table t, final Config cfg, final SwitchableBackend backend, final GrowthState gstate) {
-        Table.MaintStatus st = t.maint;
-        Table.MaintState ms = t.maintState;
+        CriterionGenerator.GrowthResult g;
         try {
-            CriterionGenerator gen = buildMaintGenerator(cfg, backend, gstate);
-            if (gen == null) {
-                st.phase = "error";
-                st.result = "缺 openrouter 凭据，无法生成判据";
-                st.finishedAt = System.currentTimeMillis();
-                return;
+            g = gen.generate(parent, siblings, java.util.Collections.singletonList(content),
+                    cfg.getInt("growth.maxNew", 2));
+        } catch (Exception e) {
+            growthStep(out, parent, 0, 0, 0, 0, null, null, "判据生成失败: " + e.getMessage());
+            return;
+        }
+        if (g.branches.isEmpty()) {
+            growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, 0, null, null,
+                    "生成器认为该层无值得生长的区分");
+            return;
+        }
+        // 逐分支验收：growNode 入树（本条在重判存量里）→ 查本条收编与否 → 未收编 undoGrow 原位回滚
+        List<Object> kept = new ArrayList<Object>();
+        List<Object> rolledBack = new ArrayList<Object>();
+        String newLeaf = null;
+        for (String[] b : g.branches) {
+            String name = b[0];
+            SemQuestTree.GrowReport gr;
+            try {
+                gr = t.tree.growNode(parent, name, b[1], null);
+            } catch (Exception e) {
+                continue;   // 撞名/非法名等：跳过该分支
             }
-            int maxRounds = cfg.getInt("growth.maintRounds", 4);
-            int round = 0;
-            for (; round < maxRounds; round++) {
-                if (!growthEnabledOf(cfg, gstate)) {
-                    st.result = "生长开关已关闭，维护中止";
+            double prob = 0;
+            boolean hit = false;
+            for (SemQuestTree.Move mv : gr.moves) {
+                if (docId.equals(mv.docId)) {   // 本条即触发样本：收编与否看这次重判
+                    hit = mv.moved;
+                    prob = mv.prob;
                     break;
                 }
-                st.round = round + 1;
-                ms.age++;
-                st.current = "第 " + st.round + " 轮：回收扫描";
-                synchronized (t) {
-                    recycleSweep(t, ms, st, cfg);
-                    persistTable(t);
-                }
-                st.current = "第 " + st.round + " 轮：判据体检";
-                auditAndRewrite(t, ms, st, cfg, gen);
-                st.current = "第 " + st.round + " 轮：兜底批量生长";
-                growBuffered(t, ms, st, cfg, gen);
             }
-            st.current = "";
-            if (st.result == null) {
-                st.result = "完成 " + round + " 轮：摘枝 " + st.recycled + " · 重写 " + st.rewrites
-                        + " · 生长 " + st.grew + " · 体检 " + st.audits;
+            if (hit) {
+                LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
+                rec.put("parent", parent);
+                rec.put("name", name);
+                rec.put("yes", b[1]);
+                rec.put("no", "");
+                rec.put("auto", Boolean.TRUE);   // 生长来源标记：回放时零模型恢复，viz 可识别为自动长出
+                t.grown.add(rec);
+                LinkedHashMap<String, Object> br = new LinkedHashMap<String, Object>();
+                br.put("name", name);
+                br.put("yes", b[1]);
+                br.put("prob", prob);
+                kept.add(br);
+                newLeaf = name;
+                persistTable(t);
+                break;   // 本条已收编：余下候选不再入树，免无效重判开销
             }
-            st.phase = "done";
-            st.finishedAt = System.currentTimeMillis();
-            synchronized (t) {
-                maybeSubmitMaint(t, cfg, backend, gstate);   // 收工自查：积压仍达标且有未冻结层 → 重新提交续跑
-            }
-        } catch (Exception e) {
-            st.phase = "error";
-            st.result = e.getMessage() == null ? e.toString() : e.getMessage();
-            st.finishedAt = System.currentTimeMillis();
-        }
-    }
-
-    /** 维护生成器（体检+兜底生长共用）：mock 判定链路走 MockGenerator（零 token）；真实链路 openrouter chat——
-     *  三个提示词文件路径构造时各自可选读取（未配置在用到时才报，由调用方记任务状态）；缺凭据回 null。 */
-    private static CriterionGenerator buildMaintGenerator(Config cfg, SwitchableBackend backend, GrowthState gstate) {
-        if ("mock".equals(backend.name())) return new CriterionGenerator.MockGenerator();
-        String apiKey = cfg.get("openrouter.apikey", null);
-        if (apiKey == null || apiKey.trim().isEmpty()) return null;
-        return new CriterionGenerator.OpenRouterGenerator(
-                cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
-                growthModelOf(cfg, gstate),
-                apiKey, cfg.getInt("timeoutMs", 30000),
-                cfg.get("growth.prompt", null),
-                cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null),
-                cfg.get("growth.extend.prompt", null),
-                cfg.get("growth.audit.prompt", null));
-    }
-
-    /**
-     * 回收扫描（表锁内，零模型）：收编数为 0（nodeDocs 子树全空）且过保护期（growth.recycleProtect 轮）
-     * 的真实分支摘除——undoGrow 复用：零收编枝=纯摘枝零迁移，唯一实子摘除父层自动回叶形态；
-     * grown 记录同步清除防回放复活。层防抖：同一层连续摘 2 枝 → 入生长失败记忆冻结该层
-     * （防「长一条烂的→摘→再长」震荡），解冻=兜底样本换血过半（与生长失败同一条规则）。
-     */
-    private static void recycleSweep(Table t, Table.MaintState ms, Table.MaintStatus st, Config cfg) {
-        int protect = cfg.getInt("growth.recycleProtect", 3);
-        List<String[]> branches = t.tree.branchList();   // 锁内快照
-        for (String[] b : branches) {
-            String parent = b[0], name = b[1];
-            if (!ms.branchBorn.containsKey(name)) ms.branchBorn.put(name, Integer.valueOf(ms.age));   // 首见登记
-            if (ms.age - ms.branchBorn.get(name).intValue() < protect) continue;   // 保护期内不回收
-            int count = t.tree.nodeDocs(name).docs.size();   // 子树全空才算废枝（内部枝看子树合计，非兜底叶单层）
-            if (count > 0) {   // 有收编：非废枝，顺手清该层摘枝连击
-                ms.recycleStreak.remove(parent);
-                continue;
-            }
-            if (count < 0) continue;   // 节点已消失（祖先先被摘）：跳过
             try {
                 t.tree.undoGrow(parent, name);
             } catch (Exception ignore) {
-                continue;   // 摘失败极罕见：留待下轮
+                // 回滚失败极罕见（节点刚加进去）：留待人工清理
             }
-            for (java.util.Iterator<Map<String, Object>> it = t.grown.iterator(); it.hasNext(); ) {
-                Map<String, Object> g = it.next();
-                if (name.equals(String.valueOf(g.get("name")))) it.remove();
-            }
-            ms.branchBorn.remove(name);
-            ms.lastAudit.remove(name);
-            ms.rewriteFails.remove(name);
-            st.recycled++;
-            Integer streak = ms.recycleStreak.get(parent);
-            int s = streak == null ? 1 : streak.intValue() + 1;
-            if (s >= 2) {   // 连续摘 2 枝：该层生长防抖冻结（证据=当前兜底样本，换血过半才解冻）
-                Table.GrowFail f = new Table.GrowFail();
-                f.note = "连续摘枝防抖：该层生长的枝两度零收编被回收，冻结至兜底样本换血过半";
-                f.sampleIds.addAll(bufferIdsOf(t, parent));
-                ms.growthFails.put(parent, f);
-                ms.recycleStreak.remove(parent);
-            } else {
-                ms.recycleStreak.put(parent, Integer.valueOf(s));
-            }
+            rolledBack.add(name);
         }
-    }
-
-    /**
-     * 判据体检 + 重写验收（noul 专属；choice 表跳过）：轮转队列取「距上次体检最久」的 growth.auditBatch
-     * 个分支（人工编辑过的分支不进队列——人工意志不被机器覆盖），锁内快照（判据/成员30/层兜底30/兄弟/规则），
-     * 锁外体检生成：branches 空=健康；非空=重写提案，走两道门——
-     * ① 旧成员保住率 ≥ growth.refineKeep 才许替换（否则失败记忆+连续 2 次冻结）；② 兜底同类过门迁入（奖励项）。
-     * 通过后 rewriteNode 替换判据 + 同步 grown 记录 yes（回放对齐）。
-     */
-    private static void auditAndRewrite(Table t, Table.MaintState ms, Table.MaintStatus st, Config cfg, CriterionGenerator gen) {
-        if (t.tree.choiceMode()) return;   // choice 判据=选项描述语义，代谢一期只管 noul（延伸同款边界）
-        final int auditBatch = cfg.getInt("growth.auditBatch", 8);
-        final double refineKeep = cfg.getDouble("growth.refineKeep", 0.9);
-        // 锁内快照：体检队列（按距上次体检最久排序，滤人工锁定）+ 每分支的成员/兜底/兄弟/规则
-        List<String[]> queue = new ArrayList<String[]>();
-        Map<String, String[]> meta = new LinkedHashMap<String, String[]>();       // name → {parent, yes, rule}
-        Map<String, List<SemQuestTree.NodeDoc>> members = new LinkedHashMap<String, List<SemQuestTree.NodeDoc>>();
-        Map<String, List<SemQuestTree.NodeDoc>> fallbacks = new LinkedHashMap<String, List<SemQuestTree.NodeDoc>>();
-        Map<String, List<String[]>> siblings = new LinkedHashMap<String, List<String[]>>();
-        synchronized (t) {
-            Set<String> locked = new HashSet<String>();
-            for (Map<String, Object> e : t.edits) {   // 人工编辑过的分支（改名前后名都算）体检永久跳过
-                Object nm = e.get("name");
-                if (nm instanceof String) locked.add((String) nm);
-                Object nn = e.get("newName");
-                if (nn instanceof String) locked.add((String) nn);
-            }
-            List<String[]> all = new ArrayList<String[]>(t.tree.branchList());
-            Collections.sort(all, new Comparator<String[]>() {
-                public int compare(String[] x, String[] y) {
-                    Integer a = ms.lastAudit.get(x[1]), b = ms.lastAudit.get(y[1]);
-                    return (a == null ? 0 : a.intValue()) - (b == null ? 0 : b.intValue());
-                }
-            });
-            for (String[] b : all) {
-                if (queue.size() >= auditBatch) break;
-                if (locked.contains(b[1])) continue;   // 人工锁定：不体检不消耗名额
-                queue.add(b);
-                meta.put(b[1], new String[]{b[0], b[2], t.tree.effectiveRuleOf(b[1])});
-                members.put(b[1], head(t.tree.nodeDocs(b[1]).docs, 30));
-                fallbacks.put(b[1], tail(bufferDocsOf(t.tree, b[0]), 30));   // 取尾部（最新积压）
-                siblings.put(b[1], t.tree.branchView(b[0]));
-            }
-        }
-        if (queue.isEmpty()) return;
-        double gate = t.tree.gate();   // 门控快照：锁外判定比较用（tree.gate 非 volatile，读快照防撕裂）
-        int idx = 0;
-        for (String[] b : queue) {
-            String name = b[1];
-            Table.RewriteFail rf = ms.rewriteFails.get(name);
-            if (rf != null && rf.fails >= 2) {
-                synchronized (t) {   // 冻结中先查解冻：分支有新收编（证据变了）→ 清记忆解冻
-                    int now = t.tree.nodeDocs(name).docs.size();
-                    if (now > rf.frozenAtDocs) {
-                        ms.rewriteFails.remove(name);
-                        rf = null;
-                    }
-                }
-                if (rf != null) continue;   // 仍冻结：证据没变就不许再试（不白调模型）
-            }
-            st.current = "体检 " + (++idx) + "/" + queue.size() + "：「" + name + "」";
-            List<String> mems = new ArrayList<String>(), fbs = new ArrayList<String>();
-            for (SemQuestTree.NodeDoc d : members.get(name)) mems.add(d.content);
-            for (SemQuestTree.NodeDoc d : fallbacks.get(name)) fbs.add(d.content);
-            CriterionGenerator.GrowthResult g;
-            try {
-                g = gen.generateAudit(name, meta.get(name)[1], mems, fbs, siblings.get(name), rewriteAttempts(ms, name));
-            } catch (IllegalStateException e) {
-                st.result = e.getMessage();   // 提示词未配置：配置问题整段跳过（生长不受影响）
-                return;
-            } catch (Exception e) {
-                continue;   // 网络/解析瞬态失败：跳过该分支，下轮再体检
-            }
-            st.genIn += g.inputTokens;
-            st.genOut += g.outputTokens;
-            st.audits++;
-            synchronized (t) {
-                ms.lastAudit.put(name, Integer.valueOf(ms.age));
-            }
-            if (g.branches.isEmpty()) continue;   // 健康：不动
-            String[] p = g.branches.get(0);
-            if (!name.equals(p[0]) || p[1].equals(meta.get(name)[1])) continue;   // 提案名不符 / 判据没变：忽略
-            // —— 验收门 ①：旧成员保住率 ——
-            List<SemQuestTree.NodeDoc> oldDocs = members.get(name);
-            int keep = 0;
-            List<String> kicked = new ArrayList<String>();
-            boolean judgeFail = false;
-            for (SemQuestTree.NodeDoc d : oldDocs) {
-                double prob;
-                try {
-                    prob = t.tree.judgeOne(d.content, name, p[1], null, meta.get(name)[2]);
-                } catch (IOException e) {
-                    judgeFail = true;   // 判定失败视作不过门：保守保留旧判据
-                    break;
-                }
-                if (prob >= gate) keep++;
-                else kicked.add(d.id + ": " + tail40(d.content));
-            }
-            double rate = oldDocs.isEmpty() ? 1.0 : (double) keep / oldDocs.size();
-            if (judgeFail || rate < refineKeep) {
-                synchronized (t) {
-                    Table.RewriteFail f = ms.rewriteFails.get(name);
-                    if (f == null) {
-                        f = new Table.RewriteFail();
-                        ms.rewriteFails.put(name, f);
-                    }
-                    f.proposedYes = p[1];
-                    f.keepRate = rate;
-                    f.kicked.clear();
-                    f.kicked.addAll(kicked.subList(0, Math.min(kicked.size(), 10)));
-                    f.fails++;
-                    f.frozenAtDocs = t.tree.nodeDocs(name).docs.size();
-                    f.note = "重写验收未过：旧成员保住率 " + Math.round(rate * 100) + "%（门限 "
-                            + Math.round(refineKeep * 100) + "%）";
-                }
-                continue;
-            }
-            // —— 验收门 ②：兜底同类吸入（奖励项，不设门限；单条失败留在兜底） ——
-            for (SemQuestTree.NodeDoc d : fallbacks.get(name)) {
-                double prob;
-                try {
-                    prob = t.tree.judgeOne(d.content, name, p[1], null, meta.get(name)[2]);
-                } catch (IOException e) {
-                    continue;
-                }
-                synchronized (t) {
-                    t.tree.moveJudged(meta.get(name)[0], d.id, name, prob);   // 从父层兜底叶迁入
-                }
-            }
-            // —— 提交：判据替换 + grown 记录同步（回放对齐） ——
-            synchronized (t) {
-                t.tree.rewriteNode(name, p[1], null);
-                for (Map<String, Object> grec : t.grown) {
-                    if (name.equals(String.valueOf(grec.get("name")))) grec.put("yes", p[1]);
-                }
-                ms.rewriteFails.remove(name);
-                st.rewrites++;
-                System.out.println("[代谢] 表「" + t.name + "」判据重写「" + name + "」→ " + p[1]
-                        + "（保住率 " + Math.round(rate * 100) + "%）");
-            }
-        }
-    }
-
-    /**
-     * 兜底批量生长（各层独立，choice 表同样生效——growSeed+整题重判口径）：兜底积压 ≥ 阈值且未冻结
-     * 且未层满 → 锁内快照（siblings + 积压样本均匀抽样 growth.samples 条 + 失败记忆）→ 锁外一次生成
-     * ≤growth.maxNew 个候选 → 逐候选「锁内 growSeed 结构入树 → 锁外存量重判 → 锁内 moveJudged 迁移」
-     * → 积压快照样本收编数 ≥ growth.acceptMin 保留（记 grown 回放记录），否则 undoGrow 换下一候选；
-     * 全部回滚 → 失败记忆入档该层冻结（解冻=兜底样本换血过半）。生成器返回「无区分」也入档
-     * （下次带「上次你认为无区分」重审）；网络/配置失败不入档（语义失败才值得吸取教训）。
-     */
-    private static void growBuffered(Table t, Table.MaintState ms, Table.MaintStatus st, Config cfg, CriterionGenerator gen) throws IOException {
-        final int rootThreshold = cfg.getInt("growth.bufferRoot", 30);
-        final int layerThreshold = cfg.getInt("growth.bufferMin", 5);
-        final int sampleN = cfg.getInt("growth.samples", 20);
-        final int acceptMin = cfg.getInt("growth.acceptMin", 2);
-        final int maxNew = cfg.getInt("growth.maxNew", 2);
-        final int maxBranches = cfg.getInt("growth.maxBranches", 12);
-        // 解冻检查（锁内）：冻结层的兜底样本换血过半（交集 < 一半）→ 清记忆解冻；达标层清单（锁内填充）
-        List<String[]> ready = new ArrayList<String[]>();
-        synchronized (t) {
-            for (String layer : new ArrayList<String>(ms.growthFails.keySet())) {
-                Table.GrowFail f = ms.growthFails.get(layer);
-                List<String> cur = bufferIdsOf(t, layer);
-                long inter = 0;
-                for (String id : f.sampleIds) if (cur.contains(id)) inter++;
-                if (f.sampleIds.isEmpty() || inter * 2 < f.sampleIds.size()) {
-                    ms.growthFails.remove(layer);
-                    System.out.println("[代谢] 表「" + t.name + "」层「" + layer + "」兜底换血过半，生长解冻");
-                }
-            }
-            // 达标层清单（跳过冻结层与层满层）
-            List<String[]> layers = t.tree.layerList();
-            for (int i = 0; i < layers.size(); i++) {
-                int threshold = i == 0 ? rootThreshold : layerThreshold;
-                String layer = layers.get(i)[0];
-                if (Integer.parseInt(layers.get(i)[1]) < threshold) continue;
-                if (ms.growthFails.containsKey(layer)) continue;   // 冻结中：证据没变不重试
-                List<String[]> sib = t.tree.branchView(layer);
-                if (sib == null || sib.size() >= maxBranches) continue;   // 层已消失 / 层满护栏
-                ready.add(new String[]{layer, String.valueOf(sib.size())});
-            }
-        }
-        // 逐层生长：快照（锁内）→ 生成（锁外）→ 逐候选「结构入树（锁内）→ 存量重判（锁外）→ 迁移（锁内）」
-        for (String[] r : ready) {
-            String layer = r[0];
-            List<String[]> siblings;
-            List<String> sampleIds = new ArrayList<String>(), sampleTexts = new ArrayList<String>();
-            String rule;
-            synchronized (t) {
-                siblings = t.tree.branchView(layer);
-                if (siblings == null) continue;   // 层已消失（并发删除等极罕见）
-                List<SemQuestTree.NodeDoc> buf = bufferDocsOf(t.tree, layer);
-                if (!buf.isEmpty()) {   // 均匀步长抽样（与延伸同款：整体代表性优于只取前 N）
-                    int limit = Math.min(sampleN, buf.size());
-                    double step = (double) buf.size() / limit;
-                    for (int k = 0; k < limit; k++) {
-                        SemQuestTree.NodeDoc d = buf.get((int) (k * step));
-                        sampleIds.add(d.id);
-                        sampleTexts.add(d.content);
-                    }
-                }
-                rule = t.tree.effectiveRuleOf(layer);
-            }
-            if (sampleIds.isEmpty()) continue;
-            st.current = "生长「" + layer + "」（积压 " + sampleIds.size() + "）";
-            CriterionGenerator.GrowthResult g;
-            try {
-                g = gen.generate(layer, siblings, sampleTexts, maxNew, growthAttempts(ms, layer));
-            } catch (IllegalStateException e) {
-                st.result = e.getMessage();   // 提示词未配置：配置问题显式暴露，本任务不再生长
-                break;
-            } catch (Exception e) {
-                continue;   // 网络/解析瞬态失败：不入失败记忆（语义失败才值得吸取教训），下轮重试
-            }
-            st.genIn += g.inputTokens;
-            st.genOut += g.outputTokens;
-            if (g.branches.isEmpty()) {   // 「无区分」也是语义结论：入档，下次带证据重审
-                synchronized (t) {
-                    Table.GrowFail f = ms.growthFails.get(layer);
-                    if (f == null) {
-                        f = new Table.GrowFail();
-                        ms.growthFails.put(layer, f);
-                    }
-                    f.note = "上次生成认为该层无值得生长的区分（积压样本如下），请重新审视";
-                    f.sampleIds.clear();
-                    f.sampleIds.addAll(sampleIds);
-                    f.rounds++;
-                }
-                continue;
-            }
-            boolean kept = false;
-            for (String[] cand : g.branches) {
-                SemQuestTree.GrowSeed seed;
-                try {
-                    synchronized (t) {
-                        seed = t.tree.growSeed(layer, cand[0], cand[1], null);   // 结构入树（零模型）
-                    }
-                } catch (Exception e) {
-                    continue;   // 撞名/非法名等：跳过该候选
-                }
-                int collected = 0;
-                for (String[] d : seed.affected) {   // 存量重判（锁外）：口径同 growNode——过门迁入，不过留原位
-                    double prob;
-                    try {
-                        prob = t.tree.judgeOne(d[1], cand[0], cand[1], null, seed.rule);
-                    } catch (IOException e) {
-                        continue;   // 单条判定失败视作不过门：留在原位
-                    }
-                    boolean mv;
-                    synchronized (t) {
-                        mv = t.tree.moveJudged(layer, d[0], cand[0], prob);
-                    }
-                    if (mv && sampleIds.contains(d[0])) collected++;   // 验收只看快照样本的收编数
-                }
-                if (collected >= acceptMin) {
-                    synchronized (t) {
-                        LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
-                        rec.put("parent", layer);
-                        rec.put("name", cand[0]);
-                        rec.put("yes", cand[1]);
-                        rec.put("no", "");
-                        rec.put("auto", Boolean.TRUE);   // 生长来源标记：回放时零模型恢复，viz 可识别为自动长出
-                        t.grown.add(rec);
-                        ms.branchBorn.put(cand[0], Integer.valueOf(ms.age));
-                        ms.growthFails.remove(layer);
-                        ms.recycleStreak.remove(layer);
-                        st.grew++;
-                        persistTable(t);
-                    }
-                    System.out.println("[代谢] 表「" + t.name + "」层「" + layer + "」生长枝「" + cand[0]
-                            + "」（积压样本收编 " + collected + "/" + sampleIds.size() + "）");
-                    kept = true;
-                    break;   // 收编达标：余下候选不再入树
-                }
-                synchronized (t) {   // 验收未过：整枝回滚（零模型，存量原位还原）
-                    try {
-                        t.tree.undoGrow(layer, cand[0]);
-                    } catch (Exception ignore) { }
-                }
-            }
-            if (!kept) {   // 全候选回滚：失败记忆入档 + 该层冻结（换血过半才解冻）
-                synchronized (t) {
-                    Table.GrowFail f = ms.growthFails.get(layer);
-                    if (f == null) {
-                        f = new Table.GrowFail();
-                        ms.growthFails.put(layer, f);
-                    }
-                    f.proposals.clear();
-                    f.proposals.addAll(g.branches);
-                    f.sampleIds.clear();
-                    f.sampleIds.addAll(sampleIds);
-                    f.rounds++;
-                    f.note = "上次生长全部候选回滚（积压 " + sampleIds.size() + " 条收编不足 " + acceptMin
-                            + "），请分析判据覆盖不足原因";
-                }
-            }
-        }
-    }
-
-    /** 层兜底积压样本（生长输入/体检对照组）：内部层取其兜底叶存量，空树根叶取 ROOT 直挂。 */
-    private static List<SemQuestTree.NodeDoc> bufferDocsOf(SemQuestTree tree, String layer) {
-        try {
-            return tree.nodeDocs(layer + SemQuestTree.OTHER_SUFFIX).docs;
-        } catch (IllegalArgumentException e) {
-            try {
-                return tree.nodeDocs(layer).docs;   // 无兜底叶（空树根叶形态）
-            } catch (IllegalArgumentException e2) {
-                return new ArrayList<SemQuestTree.NodeDoc>();
-            }
-        }
-    }
-
-    /** 层兜底积压样本 id 集（生长失败解冻的换血判定用）。 */
-    private static List<String> bufferIdsOf(Table t, String layer) {
-        List<String> ids = new ArrayList<String>();
-        for (SemQuestTree.NodeDoc d : bufferDocsOf(t.tree, layer)) ids.add(d.id);
-        return ids;
-    }
-
-    /** 列表头截断（取前 n 条，成员用最早收编的代表性样本）。 */
-    private static <T> List<T> head(List<T> list, int n) {
-        return list.size() <= n ? list : new ArrayList<T>(list.subList(0, n));
-    }
-
-    /** 列表尾截断（取最新 n 条，兜底积压用最新样本）。 */
-    private static <T> List<T> tail(List<T> list, int n) {
-        return list.size() <= n ? list : new ArrayList<T>(list.subList(list.size() - n, list.size()));
-    }
-
-    /** 正文截断（失败记忆/摘要用）：超 40 字截断加省略号。 */
-    private static String tail40(String s) {
-        return s.length() <= 40 ? s : s.substring(0, 40) + "…";
-    }
-
-    /** {attempts} 段（生长）：上次生长失败的提案与结论证据（机械拼装，非提示词）。无历史回 null。 */
-    private static String growthAttempts(Table.MaintState ms, String layer) {
-        Table.GrowFail f = ms.growthFails.get(layer);
-        if (f == null) return null;
-        StringBuilder sb = new StringBuilder();
-        if (f.proposals.isEmpty()) {
-            sb.append("上次生成认为该层无值得生长的区分");
+        if (newLeaf != null) {
+            List<Object> lv = new ArrayList<Object>(rep.leaves);
+            lv.remove(fb);
+            lv.add(newLeaf);
+            out.put("leaves", lv);   // 本条已收编进新枝：响应落位换成新枝
+            growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, kept.size(), kept, null, null);
         } else {
-            sb.append("上次生成提案：");
-            for (String[] p : f.proposals) {
-                sb.append("枝「").append(p[0]).append("」（判据：").append(p[1]).append("）");
-            }
+            growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, 0, null, rolledBack,
+                    "验收未过：本条内容未收编进任何新枝，已全部回滚");
         }
-        sb.append("。").append(f.note).append("。本次必须改进，不得原样重提。");
-        return sb.toString();
     }
 
-    /** {attempts} 段（体检/重写）：上次重写失败的提案与保住率证据。无历史回 null。 */
-    private static String rewriteAttempts(Table.MaintState ms, String name) {
-        Table.RewriteFail f = ms.rewriteFails.get(name);
-        if (f == null) return null;
-        StringBuilder sb = new StringBuilder("上次重写提案（yes：").append(f.proposedYes)
-                .append("）验收失败——").append(f.note).append("，被踢出的旧成员：");
-        for (String k : f.kicked) sb.append("「").append(k).append("」");
-        sb.append("。本次重写必须在修正问题的同时保住全部现有成员。");
-        return sb.toString();
-    }
-
-    /** 维护状态全景（GET /maint）：任务快照 + 各层积压水位与阈值 + 冻结层与失败记忆摘要（内存态现算）。 */
-    private static LinkedHashMap<String, Object> maintMap(Table t, Config cfg) {
-        Table.MaintState ms = t.maintState;
-        LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>(t.maint.snapshot());
-        int rootThreshold = cfg.getInt("growth.bufferRoot", 30);
-        int layerThreshold = cfg.getInt("growth.bufferMin", 5);
-        List<Object> buffers = new ArrayList<Object>();
-        List<Object> frozen = new ArrayList<Object>();
-        List<Object> rewriteFails = new ArrayList<Object>();
-        synchronized (t) {
-            List<String[]> layers = t.tree.layerList();
-            for (int i = 0; i < layers.size(); i++) {
-                LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
-                m.put("layer", layers.get(i)[0]);
-                m.put("buffered", Integer.valueOf(Integer.parseInt(layers.get(i)[1])));
-                m.put("threshold", Integer.valueOf(i == 0 ? rootThreshold : layerThreshold));
-                buffers.add(m);
-            }
-            for (Map.Entry<String, Table.GrowFail> e : ms.growthFails.entrySet()) {
-                LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
-                m.put("layer", e.getKey());
-                m.put("rounds", Integer.valueOf(e.getValue().rounds));
-                m.put("note", e.getValue().note);
-                frozen.add(m);
-            }
-            for (Map.Entry<String, Table.RewriteFail> e : ms.rewriteFails.entrySet()) {
-                LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
-                m.put("branch", e.getKey());
-                m.put("fails", Integer.valueOf(e.getValue().fails));
-                m.put("keepRate", Double.valueOf(e.getValue().keepRate));
-                m.put("note", e.getValue().note);
-                rewriteFails.add(m);
-            }
-        }
-        out.put("layers", buffers);
-        out.put("frozenLayers", frozen);
-        out.put("rewriteFails", rewriteFails);
-        out.put("stats", t.tree.statsLine());
-        return out;
+    /** growthStep 组装进 out：branches=验收保留的新枝明细；failedBranches=已回滚的分支名；failed=放弃原因。 */
+    private static void growthStep(Map<String, Object> out, String parent,
+                                   int inTok, int outTok, long ms, int keptCount,
+                                   List<Object> kept, List<Object> failedBranches, String failed) {
+        LinkedHashMap<String, Object> gs = new LinkedHashMap<String, Object>();
+        gs.put("parent", parent);
+        gs.put("genTokens", inTok + outTok);
+        gs.put("genInTokens", inTok);
+        gs.put("genOutTokens", outTok);
+        gs.put("genMs", ms);
+        gs.put("kept", keptCount);
+        if (kept != null) gs.put("branches", kept);
+        if (failedBranches != null) gs.put("failedBranches", failedBranches);
+        if (failed != null) gs.put("failed", failed);
+        out.put("growthStep", gs);
     }
 
     // ── 节点延伸（深度生长）：水位/手动双触发，后台单工串行闭环，不阻塞 add/quest ──
@@ -1943,23 +1453,12 @@ public final class SemQuestServer {
                 growthModelOf(cfg, gstate),
                 apiKey, cfg.getInt("timeoutMs", 30000), null,
                 cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null),
-                cfg.get("growth.extend.prompt", null),
-                null);   // 体检模板延伸用不到：不读文件，用到才报（三模板互不连坐）
+                cfg.get("growth.extend.prompt", null));
     }
 
-    /** 延伸水位：growth.splitAt × growth.splitFactor（默认 10×1.0=10：叶存量软上限，超即后台延伸拆细），≤0 视为关闭水位触发。 */
+    /** 延伸水位：growth.splitAt × growth.splitFactor（默认 255×0.7=178），≤0 视为关闭水位触发。 */
     private static int extendWatermark(Config cfg) {
-        return (int) Math.round(cfg.getInt("growth.splitAt", 10) * cfg.getDouble("growth.splitFactor", 1.0));
-    }
-
-    /** doc 过滤组配置读取并应用到树（代码默认关；另须 prompt.docfilter.criterion 模板就位才实际过滤）。返回是否发生变化。 */
-    private static boolean applyDocFilter(Config cfg, SemQuestTree tree) {
-        boolean on = "true".equalsIgnoreCase(cfg.get("docFilter", "false"));
-        return tree.setDocFilter(on,
-                cfg.getInt("docFilter.batch", 20),
-                cfg.getDouble("docFilterGate", 0.6),
-                cfg.getInt("docFilter.maxLen", 200),
-                cfg.getInt("docFilter.maxDocs", 100));
+        return (int) Math.round(cfg.getInt("growth.splitAt", 255) * cfg.getDouble("growth.splitFactor", 0.7));
     }
 
     /**
@@ -2001,7 +1500,7 @@ public final class SemQuestServer {
         st.genOut = 0;
         st.startedAt = System.currentTimeMillis();
         st.finishedAt = 0;
-        MAINT_POOL.execute(new Runnable() {
+        EXTEND_POOL.execute(new Runnable() {
             public void run() {
                 extendTask(t, node, manual, cfg, backend, gstate);
             }
@@ -2058,18 +1557,11 @@ public final class SemQuestServer {
                 int judgedBase = st.rejudged;   // 进度全程累计口径：多轮百分比单调不回跳
                 st.totalDocs += plan.totalDocs;
                 st.current = "生成更细的子类判据…";
-                String attempts;
-                synchronized (t) {
-                    attempts = t.maintState.extendFails.get(node);   // 上次零收编证据：下次生成有改进方向
-                }
                 CriterionGenerator.GrowthResult g = gen.generateExtend(node, plan.parentYes, plan.totalDocs,
-                        plan.siblings, plan.samples, attempts);
+                        plan.siblings, plan.samples);
                 st.genIn += g.inputTokens;   // 生成账单：与重判账单（judgeOne 累加进 stats）口径互补
                 st.genOut += g.outputTokens;
                 if (g.branches.isEmpty()) {
-                    synchronized (t) {   // 语义失败入档（网络/配置失败不入档）：下次生成带上证据重新审视
-                        t.maintState.extendFails.put(node, "上次生成认为该节点无需更细区分（存量样本未给出新簇），如有新增语料请换角度审视");
-                    }
                     stop = "生成器认为现有子分支已能覆盖，无更细的区分";
                     break;
                 }
@@ -2128,10 +1620,6 @@ public final class SemQuestServer {
                 }
                 if (movedThis == 0) {
                     st.rolledBack = rolled;
-                    synchronized (t) {   // 失败证据入档：下次延伸生成带上，不再开盲盒
-                        t.maintState.extendFails.put(node,
-                                "上次延伸提案枝「" + b[0] + "」（判据：" + b[1] + "）零收编已回滚，请换角度提出更细区分");
-                    }
                     stop = "验收未过：存量无一收编进「" + b[0] + "」，已回滚";
                     break;
                 }
@@ -2139,9 +1627,6 @@ public final class SemQuestServer {
                 movedAll += movedThis;
                 st.keptBranches = rounds;
                 st.movedDocs = movedAll;
-                synchronized (t) {
-                    t.maintState.extendFails.remove(node);   // 收编成功：旧证据失效
-                }
             }
             st.current = "";
             st.result = stop != null ? stop : ("完成：" + rounds + " 个新枝 · 迁入 " + movedAll + " 条存量");
@@ -2213,41 +1698,6 @@ public final class SemQuestServer {
         }
     }
 
-    /**
-     * GET /api/t/&lt;id&gt;/maint → 维护任务状态 + 各层兜底水位 + 失败记忆快照（viz 维护面板轮询）；
-     * POST → 手动触发一轮维护（回收/体检/重写/兜底批量生长，后台执行；running 中幂等返回现状态）。
-     */
-    private static final class MaintHandler extends BaseHandler {
-        private final Config cfg;
-        private final SwitchableBackend backend;
-        private final GrowthState gstate;
-
-        MaintHandler(Config cfg, SwitchableBackend backend, GrowthState gstate) {
-            this.cfg = cfg;
-            this.backend = backend;
-            this.gstate = gstate;
-        }
-
-        void handle(Table t, HttpExchange ex) throws IOException {
-            if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
-                json(ex, 200, Json.write(maintMap(t, cfg)));
-                return;
-            }
-            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-                ex.sendResponseHeaders(405, -1);
-                return;
-            }
-            boolean already;
-            synchronized (t) {   // 提交检查与状态复位在锁内：与 add 提交/任务收工互斥
-                already = "running".equals(t.maint.phase);
-                if (!already) submitMaint(t, cfg, backend, gstate);
-            }
-            LinkedHashMap<String, Object> out = maintMap(t, cfg);
-            out.put("alreadyRunning", Boolean.valueOf(already));
-            json(ex, already ? 200 : 202, Json.write(out));
-        }
-    }
-
     /** POST /api/t/&lt;id&gt;/add {content, id?} → 一条语料按判据下行落叶；id 缺省自动生成，落位随快照落盘。 */
     private static final class AddHandler extends BaseHandler {
         private final Config cfg;
@@ -2286,8 +1736,9 @@ public final class SemQuestServer {
                 out.put("id", id);
                 out.put("leaves", new ArrayList<Object>(rep.leaves));
                 out.put("steps", stepsJson(rep.steps));
-                // 缓冲批量生长：落兜底即积压进兜底叶；各层积压达阈值 → 提交后台维护任务（本请求立即返回不等待）
-                maybeSubmitMaint(t, cfg, backend, gstate);
+                // 数据驱动生长：落位全为兜底叶（或空树根叶）→ 树里没有能承接这条内容的类别，
+                // 同步生成判据长新枝并收编本条（成功后 out.leaves 换为新枝、挂 growthStep）
+                growOnFallback(t, id, ((String) cv).trim(), rep, out, cfg, backend, gstate);
                 maybeExtendOnWatermark(t, rep, cfg, backend, gstate);   // 水位触发：落位叶堆积超限 → 后台延伸（不阻塞本请求）
                 out.put("stats", t.tree.statsLine());   // stats 后置：含生长重判与生成器的 token
                 persistTable(t);
@@ -2367,8 +1818,8 @@ public final class SemQuestServer {
                     r.put("id", id);
                     r.put("leaves", new ArrayList<Object>(rep.leaves));
                     r.put("steps", stepsJson(rep.steps));
-                    // 缓冲批量生长：落兜底即积压；各层积压达阈值 → 提交后台维护任务（单工池排队，本请求不等）
-                    maybeSubmitMaint(t, cfg, backend, gstate);
+                    // 数据驱动生长：本条落位全为兜底叶（或空树根叶）→ 同步长新枝并收编（成功后本条 leaves 换新枝）
+                    growOnFallback(t, id, ((String) cv).trim(), rep, r, cfg, backend, gstate);
                     maybeExtendOnWatermark(t, rep, cfg, backend, gstate);   // 水位触发：单线程池排队，本请求不等
                     results.add(r);
                     added++;
@@ -2443,8 +1894,6 @@ public final class SemQuestServer {
                 return;
             }
             String query = ((String) qv).trim();
-            // confirm（可选，默认 false）：doc 过滤超量时控制是否跳过确认直接执行（confirmRequired 流程第二步）
-            boolean confirm = Boolean.TRUE.equals(req.get("confirm"));
             // 节点名直取：查询与节点名完全一致 → 直接返回该节点子树内容（零模型调用，复用节点直取逻辑）
             try {
                 json(ex, 200, Json.write(nodeQuestMap(t.tree.nodeDocs(query))));
@@ -2453,7 +1902,7 @@ public final class SemQuestServer {
                 // 非节点名 → 走自然语言检索
             }
             try {
-                SemQuestTree.QuestReport rep = t.tree.quest(query, confirm);
+                SemQuestTree.QuestReport rep = t.tree.quest(query);
                 Map<String, Object> out = questMap(t.tree, rep);
                 // 纯读：检索只按现有结构下行，查不到就是查不到——不为查询改树（生长在 add/addBatch 触发）
                 json(ex, 200, Json.write(out));
@@ -2682,7 +2131,7 @@ public final class SemQuestServer {
         return out;
     }
 
-    /** quest 响应组装：命中叶 + 排序文档（补正文）+ doc 过滤摘要 + 判定轨迹 + 统计行。 */
+    /** quest 响应组装：命中叶 + 排序文档（补正文）+ 判定轨迹 + 统计行。 */
     private static Map<String, Object> questMap(SemQuestTree tree, SemQuestTree.QuestReport rep) {
         Map<String, String> contents = new LinkedHashMap<String, String>();
         for (Object o : tree.docsSnapshot()) {
@@ -2703,16 +2152,9 @@ public final class SemQuestServer {
             m.put("score", rd.score);
             m.put("viaLeaves", rd.viaLeaves);
             m.put("content", contents.get(rd.docId));
-            m.put("docP", rd.docP);   // doc 过滤 P(相关)；未过滤恒 1.0
             ranked.add(m);
         }
         out.put("ranked", ranked);
-        LinkedHashMap<String, Object> df = new LinkedHashMap<String, Object>();
-        df.put("total", rep.docFilterTotal);           // 去重待过滤 doc 总数（未执行=0）
-        df.put("kept", rep.docFilterKept);             // 过滤后保留数（未执行=0）
-        df.put("calls", rep.docFilterCalls);           // 过滤判定批次数
-        df.put("confirmRequired", rep.confirmRequired); // true=总量超上限且未确认：ranked 为未过滤全量，带 confirm=true 重发执行
-        out.put("docFilter", df);
         out.put("steps", stepsJson(rep.steps));
         out.put("stats", tree.statsLine());
         return out;

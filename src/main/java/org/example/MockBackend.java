@@ -39,34 +39,6 @@ public final class MockBackend implements DecisionBackend {
         return new NoulReply(probs, 0, 0, elapsedMs(start), 0.0);
     }
 
-    /**
-     * doc 过滤模拟：查询任一 2-gram 出现在判据文本（含 doc 原文与包裹文字）中即命中。
-     * 判据含模板包裹词（「查询/内容/相关」等），常见字查询可能误命中——仅供冒烟验证过滤链路，
-     * 非真实语义判定；演示与测试请保持判据区分度高的语料。
-     */
-    @Override
-    public NoulReply docFilter(String content, String rule, LinkedHashMap<String, NoulSpec> questions)
-            throws IOException {
-        long start = System.nanoTime();
-        LinkedHashMap<String, Double> probs = new LinkedHashMap<String, Double>();
-        for (Map.Entry<String, NoulSpec> e : questions.entrySet()) {
-            probs.put(e.getKey(), matches2Gram(content, e.getValue().yes) ? HIT : MISS);
-        }
-        return new NoulReply(probs, 0, 0, elapsedMs(start), 0.0);
-    }
-
-    /** 查询任一 2-gram 出现在判据文本中即命中；查询不足 2 字退化为整串包含。 */
-    private static boolean matches2Gram(String query, String docYes) {
-        if (query == null || docYes == null) return false;
-        String q = query.trim(), d = docYes.trim();
-        if (q.isEmpty()) return false;
-        if (q.length() < 2) return d.contains(q);
-        for (int i = 0; i + 2 <= q.length(); i++) {
-            if (d.contains(q.substring(i, i + 2))) return true;
-        }
-        return false;
-    }
-
     @Override
     public NoulReply choice(String content, String rule, String question,
                             LinkedHashMap<String, String> criteria) throws IOException {

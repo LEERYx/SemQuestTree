@@ -19,14 +19,12 @@ choiceGate=0.6
 # 按命中次数排序淘汰（调用最多最不易淘汰）；0=关闭；热载，仅内存不落盘
 questCacheSize=256
 
-# ── 数据驱动生长：兜底缓冲批量生长（默认关闭；热载）──────────────────
-# add/addBatch 落位全为兜底叶（或空树根叶）= 树里没有能承接这条内容的类别 → 落兜底即积压；
-# 各层兜底积压 ≥ 阈值 → 提交后台维护任务批量生长（add 立即返回，不等待）：一次快照 ≤growth.samples
-# 条积压样本调生成模型产出 ≤growth.maxNew 个新分支（名字+判据）逐个验收：
-# 结构入树（零模型）→ 存量重判（过门迁入）→ 积压快照样本收编数 ≥ growth.acceptMin 保留
-# （记 grown 回放 auto 标记），否则 undoGrow 原位回滚不丢数据；全部回滚该层冻结入失败记忆，
-# 兜底样本换血过半自动解冻重试（下次生成携带上次失败证据，不再开盲盒）。
-# quest 检索纯读不改树（查不到就是查不到）；生长与维护共用后台单工池，不阻塞 add/quest。
+# ── 数据驱动生长：add 落兜底同步长新枝（默认关闭；热载）──────────────────
+# add/addBatch 落位全为兜底叶（或空树根叶）= 树里没有能承接这条内容的类别，
+# 同步调生成模型按本条内容产出 ≤growth.maxNew 个新分支（名字+判据）逐个验收：
+# 入树后从重判结果看本条是否收编，未收编 undoGrow 原位回滚不丢数据；全部失败本条保留在兜底叶。
+# 收编的分支记入 grown 回放（auto 标记），重启零模型恢复，可用节点删除撤销。
+# 注意：生长在表锁内同步执行，生成期间该表其他请求排队；quest 检索纯读不改树（查不到就是查不到）。
 growth.enabled=false
 # 生成模型（openrouter chat completions 端点，apikey 复用 openrouter.apikey）
 # 默认款为免费中文模型，生成零成本；免费款上下线是常态，不可用时在上游换 ⚡·免费 的
@@ -49,69 +47,22 @@ growth.maxNew=2
 #growth.maxTokens=1024
 # 落兜底生长提示词：growth.prompt = 提示词文件路径（相对进程工作目录或绝对路径），
 # 文件内容即模板正文（UTF-8 纯文本；本项目在 prompts/ 目录一文件一提示词）
-# 占位符：{parent}=层节点名、{siblings}=现有分支清单、{count}/{samples}=落兜底内容、{maxNew}=上限、{attempts}=历史尝试段（仅有失败记忆时注入，无失败零开销）
+# 占位符：{parent}=层节点名、{siblings}=现有分支清单、{count}/{samples}=落兜底内容、{maxNew}=上限
 # 未配置/文件不可读/内容空白 → 生长步直接记 growthStep.failed（代码零内置模板，不给默认）
 growth.prompt=prompts/growth-prompt.txt
-
-# ── 树体代谢：维护任务（回收/体检/重写/批量生长四步循环；热载）──────────────────
-# 后台单工维护任务每轮：①回收扫描（零收编且过保护期的枝摘除）②判据体检（轮转抽样诊断）
-# ③重写验收（旧成员保住率门限，另奖励吸入层兜底同类存量）④兜底批量生长；
-# 人工 editNode 过的分支体检只报告不自动重写。触发：各层兜底积压达阈值 / viz 手动「立即维护」；
-# 单任务最多 growth.maintRounds 轮，收工自查有积压继续排队消化。
-# growth.bufferMin：非根层兜底积压触发阈值（条）
-# growth.bufferRoot：ROOT 层兜底积压触发阈值（条，首批骨架要一次长出来所以更大）
-# growth.samples：一次生长生成器看到的积压样本条数（均匀抽样）
-# growth.acceptMin：生长验收门限——积压快照样本收编数达此值才保留新枝
-# growth.auditBatch：单轮体检的分支数上限（轮转队列，最近最久未体检优先）
-# growth.recycleProtect：新枝出生保护期（全局轮数）——期间零收编也不回收
-# growth.refineKeep：重写验收门限——旧成员保住率（0~1）低于此值提案回滚入失败记忆
-# growth.maintRounds：单次维护任务的最大轮数
-growth.bufferMin=5
-growth.bufferRoot=30
-growth.samples=20
-growth.acceptMin=2
-growth.auditBatch=8
-growth.recycleProtect=3
-growth.refineKeep=0.9
-growth.maintRounds=4
-
-# 体检提示词：growth.audit.prompt = 提示词文件路径（构造时可选读取，用到才报错——三种生成
-# 提示词互不连坐：延伸任务不再连带要求 growth.prompt）。
-# 占位符：{name}=分支名、{yes}=现判据、{siblings}=兄弟判据、{memberCount}/{members}=已收编成员、
-#         {fallbackCount}/{fallback}=层兜底未承接、{attempts}=上次重写失败证据（无失败时不注入）
-# 输出 {"branches":[]} = 健康；非空 = 重写提案（须保住全部现有成员）
-growth.audit.prompt=prompts/audit-prompt.txt
 
 # ── 节点延伸（深度生长）：叶存量超水位 → 后台串行拆细该节点（不阻塞 add/quest）──
 # 触发双通道：① 水位自动（add 落位后检查）② viz 右键手动触发；false 关闭（生长总开关也须开）
 #growth.extend=true
-# 水位 = growth.splitAt × growth.splitFactor（例 10×1.0=10 条：叶存量软上限，超即拆细到下一层）；≤0 关闭水位触发
-# 2026-11-17 起默认 10 条/叶（原 178）——叶子小则 doc 过滤单批可控、树更细
-#growth.splitAt=10
-#growth.splitFactor=1.0
+# 水位 = growth.splitAt × growth.splitFactor（例 255×0.7=178 条）；≤0 关闭水位触发
+#growth.splitAt=255
+#growth.splitFactor=0.7
 # 单次延伸最多长出的子类数；给生成器看的存量样本条数
 #growth.extend.maxNew=8
 #growth.extend.samples=40
 # 延伸生成提示词（层级无关：不写死「第几层」，只约束「比父节点细一层」，任意深度递复用）
-# 占位符：{parent}={parentYes}={count}={siblings}（每轮最新）={samples}={attempts}（上次失败证据，无失败时不注入）；
-# 未配置/空白 → 延伸任务报错终止
+# 占位符：{parent}={parentYes}={count}={siblings}（每轮最新）={samples}；未配置/空白 → 延伸任务报错终止
 growth.extend.prompt=prompts/growth-extend-prompt.txt
-
-# ── doc 级出检过滤（quest 命中叶后对叶内内容逐条判定相关性，滤掉与查询无关的返回；热载）──
-# 「车」叶下落了自行车和火车：层判定只保证叶子相关，doc 过滤补齐判定链最后一环。
-# 判据树「每一跳都可判定」到 doc 级补全；与叶子水位延伸互补——延伸把常见异质在结构上拆开，过滤兜住残留。
-docFilter=true
-# P(相关) 采纳线（独立于 noulGate：doc 相关性与层判定语义强度不同）
-docFilterGate=0.6
-# 单次打包判定条数（分批多次调用，单批 prompt 规模恒定）；百炼后端单请求 ≤16 题自动再拆
-docFilter.batch=20
-# 判据里 doc 原文截断上限（只求判定相关性，防长文撑爆单批）
-docFilter.maxLen=200
-# 单次 quest 待过滤 doc 总量上限（跨命中叶去重）：超过则响应 confirmRequired=true 返回未过滤结果，
-# 由前端询问用户是否继续，确认后带 confirm=true 重发才执行——大花销必须过用户点头这道闸
-docFilter.maxDocs=100
-# doc 过滤判据包裹模板（{yes}=doc 原文截断后）；唯一可选提示词——未配置时 doc 过滤自动不生效（旧部署零影响）
-prompt.docfilter.criterion=prompts/doc-filter-prompt.txt
 
 # ── 判定提示词（系统侧组装文案；判据 yes/no 与规则文本归树，不在这里）──
 # 键值 = 提示词文件路径（相对进程工作目录或绝对路径），文件内容即模板正文（UTF-8 纯文本，一文件一提示词）。

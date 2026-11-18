@@ -12,12 +12,12 @@ import java.util.Map;
  * <p>实现两个：
  * <ul>
  *   <li>{@link OpenRouterGenerator}——openrouter chat completions 端点（通用生成模型；
- *       凭据复用 openrouter.apikey，模型经 growth.model 配置；三个生成场景各自模板独立可选：
- *       兜底批量生长 growth.prompt / 节点延伸 growth.extend.prompt / 判据体检 growth.audit.prompt——
- *       值均为提示词文件路径（构造时可选读取：未配置在用到时才抛 ISE，由维护/延伸任务记入状态，
- *       三种生成互不连坐）；
+ *       凭据复用 openrouter.apikey，模型经 growth.model 配置，落兜底生长提示词经 growth.prompt 配置、
+ *       节点延伸提示词经 growth.extend.prompt 配置——两者值均为提示词文件路径（构造时读取，文件内容即模板，
+ *       层级无关——不写死「第几层」，只约束「比父节点细一层」，任意深度可递复用；缺失/空白即抛错，
+ *       由生长编排记入 growthStep.failed）；
  *       免费模型即零成本生长；思考型模型可用 growth.maxTokens 限输出、growth.thinking 控推理力度，
- *       生成全程在后台单工线程锁外执行）
+ *       落兜底那一次生成从几十秒降到几秒）
  *   <li>{@link MockGenerator}——零 token 确定性生成（mock 判定沙箱与 E2E 用）：
  *       名字取触发样本的尾三字，验收时（mock 按子串匹配）查询含该名字即可命中
  * </ul>
@@ -38,28 +38,18 @@ public interface CriterionGenerator {
      * 为层 parentName 提出至多 maxNew 个新分支。
      *
      * @param siblings 现有兄弟分支（每项 {name, yes}，判据空回名字）——生成须与其不重叠
-     * @param samples  兜底积压正文（缓冲批量生长：一次看全积压样本集再动土）
-     * @param attempts 上次生长失败的证据段（提案+验收结论，null/空=无历史）——本次生成须吸取教训
+     * @param samples  落兜底的正文（同步生长时就是触发本条内容）
      */
-    GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew,
-                          String attempts) throws IOException;
+    GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew)
+            throws IOException;
 
     /**
      * 延伸生成：为拥挤节点 parentName 提出 1 个更细的子分支（串行闭环每轮一次，siblings 恒为最新状态）。
      * parentYes=父节点判据（子类的公共上限，提示模型粒度要再收一层）；totalDocs=待整理存量条数；
-     * samples=存量样本（内容概述，模型从中挑最大且内部相似的一簇）；attempts=上次延伸零收编的证据段（可空）。
+     * samples=存量样本（内容概述，模型从中挑最大且内部相似的一簇）。
      */
     GrowthResult generateExtend(String parentName, String parentYes, int totalDocs,
-                                List<String[]> siblings, List<String> samples, String attempts) throws IOException;
-
-    /**
-     * 判据体检：为分支 name 诊断判据质量并给出重写提案。
-     * members=已收编成员正文（截断）；fallback=所在层兜底未承接正文（对照，截断）；
-     * siblings=同层兄弟判据（互斥参照）；attempts=上次体检/重写失败的证据段（可空）。
-     * branches 空 = 健康（判据准确概括成员、无明显遗漏）；非空 = {name, 重写后 yes}——须保住全部现有成员。
-     */
-    GrowthResult generateAudit(String name, String yes, List<String> members, List<String> fallback,
-                               List<String[]> siblings, String attempts) throws IOException;
+                                List<String[]> siblings, List<String> samples) throws IOException;
 
     /** openrouter chat completions 通用生成（与决策端点同平台不同端点，同一把 key）。 */
     final class OpenRouterGenerator implements CriterionGenerator {
@@ -67,74 +57,44 @@ public interface CriterionGenerator {
         private final String model;
         private final String apiKey;
         private final int timeoutMs;
-        private final String promptTemplate;   // growth.prompt 提示词文件内容（构造时读取；未配=null，用到才报）
-        private final String extendTemplate;   // growth.extend.prompt 同上
-        private final String auditTemplate;    // growth.audit.prompt 同上
+        private final String promptTemplate;   // growth.prompt 提示词文件内容（构造时读取）
+        private final String extendTemplate;   // growth.extend.prompt 提示词文件内容（构造时读取）
         private final int maxTokens;           // growth.maxTokens（<=0 = 不发 max_tokens，沿用模型默认）
         private final String thinking;         // growth.thinking（none/low/medium/high；空白 = 不发 reasoning）
 
         public OpenRouterGenerator(String url, String model, String apiKey, int timeoutMs, String promptPath,
-                                   int maxTokens, String thinking, String extendPath, String auditPath) {
+                                   int maxTokens, String thinking, String extendPath) {
             this.url = url;
             this.model = model;
             this.apiKey = apiKey;
             this.timeoutMs = timeoutMs;
-            // 提示词正文全部来自提示词文件（代码零内置模板、零默认回退）：growth.prompt / growth.extend.prompt /
-            // growth.audit.prompt = 提示词文件路径；三种生成独立可选——传 null 的模板不读文件，用到才抛
-            // （生长/延伸/体检互不连坐，提示词缺失由调用方记入任务状态）
-            this.promptTemplate = PromptLoader.readOptional("growth.prompt", promptPath);
-            this.extendTemplate = PromptLoader.readOptional("growth.extend.prompt", extendPath);
-            this.auditTemplate = PromptLoader.readOptional("growth.audit.prompt", auditPath);
+            // 提示词正文全部来自提示词文件（代码零内置模板、零默认回退）：growth.prompt / growth.extend.prompt = 文件路径
+            this.promptTemplate = PromptLoader.read("growth.prompt", promptPath);
+            this.extendTemplate = PromptLoader.read("growth.extend.prompt", extendPath);
             this.maxTokens = maxTokens;
             this.thinking = thinking != null && !thinking.trim().isEmpty() ? thinking.trim() : null;
         }
 
-        public GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew,
-                                     String attempts) throws IOException {
-            if (promptTemplate == null) throw new IllegalStateException("生长提示词未配置：growth.prompt");
+        public GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew)
+                throws IOException {
             String prompt = promptTemplate
                     .replace("{parent}", parentName)
                     .replace("{siblings}", siblingsBlock(siblings))
                     .replace("{count}", String.valueOf(samples.size()))
                     .replace("{samples}", samplesBlock(samples))
-                    .replace("{maxNew}", String.valueOf(maxNew))
-                    .replace("{attempts}", attemptsBlock(attempts));
+                    .replace("{maxNew}", String.valueOf(maxNew));
             return callModel(prompt);
         }
 
         public GrowthResult generateExtend(String parentName, String parentYes, int totalDocs,
-                                           List<String[]> siblings, List<String> samples, String attempts) throws IOException {
-            if (extendTemplate == null) throw new IllegalStateException("延伸提示词未配置：growth.extend.prompt");
+                                           List<String[]> siblings, List<String> samples) throws IOException {
             String prompt = extendTemplate
                     .replace("{parent}", parentName)
                     .replace("{parentYes}", parentYes == null ? "" : parentYes)
                     .replace("{count}", String.valueOf(totalDocs))
                     .replace("{siblings}", siblingsBlock(siblings))
-                    .replace("{samples}", samplesBlock(samples))
-                    .replace("{attempts}", attemptsBlock(attempts));
+                    .replace("{samples}", samplesBlock(samples));
             return callModel(prompt);
-        }
-
-        public GrowthResult generateAudit(String name, String yes, List<String> members, List<String> fallback,
-                                          List<String[]> siblings, String attempts) throws IOException {
-            if (auditTemplate == null) throw new IllegalStateException("体检提示词未配置：growth.audit.prompt");
-            String prompt = auditTemplate
-                    .replace("{name}", name)
-                    .replace("{yes}", yes == null ? "" : yes)
-                    .replace("{memberCount}", String.valueOf(members.size()))
-                    .replace("{members}", samplesBlock(members))
-                    .replace("{fallbackCount}", String.valueOf(fallback.size()))
-                    .replace("{fallback}", samplesBlock(fallback))
-                    .replace("{siblings}", siblingsBlock(siblings))
-                    .replace("{attempts}", attemptsBlock(attempts));
-            return callModel(prompt);
-        }
-
-        /** {attempts} 占位符取值：无失败记忆返回空串——模板里只有裸占位符，引导文字随段注入，
-         *  不占 token 不分散注意力；有则拼完整段（引导行 + 证据，尾带换行与下文衔接）。 */
-        private static String attemptsBlock(String attempts) {
-            if (attempts == null || attempts.trim().isEmpty()) return "";
-            return "历史尝试（上次失败证据，必须吸取教训，不得原样重提）：\n" + attempts.trim() + "\n";
         }
 
         /** 现有子分支清单行（两种生成的 {siblings} 占位符共用）。 */
@@ -243,23 +203,13 @@ public interface CriterionGenerator {
 
     /** 零 token 确定性生成（mock 判定链路配套）：名字取触发样本尾三字，验收按子串匹配即可命中。 */
     final class MockGenerator implements CriterionGenerator {
-        public GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew,
-                                     String attempts) {
+        public GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew) {
             return mockBranch(siblings, samples);
         }
 
         public GrowthResult generateExtend(String parentName, String parentYes, int totalDocs,
-                                           List<String[]> siblings, List<String> samples, String attempts) {
+                                           List<String[]> siblings, List<String> samples) {
             return mockBranch(siblings, samples);
-        }
-
-        /** mock 体检（确定性）：恒提案一次重写（判据换个措辞），让冒烟链路能走通重写验收全环节；无成员=健康。 */
-        public GrowthResult generateAudit(String name, String yes, List<String> members, List<String> fallback,
-                                          List<String[]> siblings, String attempts) {
-            GrowthResult out = new GrowthResult();
-            if (members == null || members.isEmpty()) return out;
-            out.branches.add(new String[]{name, "内容表达与" + name + "相关的事（体检修正版）"});
-            return out;
         }
 
         /** 两种生成的共用 mock 语义：样本尾三字做名字，与现有分支重名视作已覆盖（返回空=闭环终止）。 */

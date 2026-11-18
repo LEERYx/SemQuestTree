@@ -1,7 +1,6 @@
 package org.example;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -94,34 +93,6 @@ public final class BailianBackend implements DecisionBackend {
         String body = Http.post(url, apiKey, sb.toString(), timeoutMs);
         long latencyMs = (System.nanoTime() - start) / 1_000_000L;
         return parse(body, latencyMs);
-    }
-
-    /**
-     * doc 过滤：百炼单请求 ≤16 题，超限时按 16 一批自动拆批多次调用，probs 与 token 账单逐批合并。
-     */
-    @Override
-    public NoulReply docFilter(String content, String rule, LinkedHashMap<String, NoulSpec> questions)
-            throws IOException {
-        if (questions.size() <= 16) return noul(content, rule, questions);
-        LinkedHashMap<String, Double> probs = new LinkedHashMap<String, Double>();
-        int in = 0, out = 0;
-        double cost = 0.0;
-        long latencyMs = 0;
-        List<NoulSpec> all = new ArrayList<NoulSpec>(questions.values());
-        List<String> keys = new ArrayList<String>(questions.keySet());
-        for (int i = 0; i < all.size(); i += 16) {
-            LinkedHashMap<String, NoulSpec> batch = new LinkedHashMap<String, NoulSpec>();
-            for (int j = i; j < Math.min(i + 16, all.size()); j++) {
-                batch.put(keys.get(j), all.get(j));
-            }
-            NoulReply r = noul(content, rule, batch);
-            probs.putAll(r.probs);
-            in += r.inputTokens;
-            out += r.outputTokens;
-            cost += r.cost;
-            latencyMs += r.latencyMs;
-        }
-        return new NoulReply(probs, in, out, latencyMs, cost);
     }
 
     /** 百炼 choice 单选：{"type":"choice","instructions":…,"criteria":{<选项>:<描述>}}（同 jev 家族方言）。 */
