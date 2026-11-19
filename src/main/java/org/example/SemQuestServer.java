@@ -1,7 +1,5 @@
 package org.example;
 
-import com.sun.net.httpserver.Filter;
-import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -24,8 +22,10 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -151,6 +151,12 @@ public final class SemQuestServer {
                 t.tree.setQuestCacheCap(qcInit);
             }
         }
+        // doc 过滤组配置铺到全部表（on/批次/门控/截断/总量上限；模板未配置时树内自动不生效）
+        for (Table t : tables.values()) {
+            synchronized (t) {
+                applyDocFilter(cfg, t.tree);
+            }
+        }
         // 判定提示词铺到全部表（装载已在上文 fail-fast 完成）
         for (Table t : tables.values()) {
             synchronized (t) {
@@ -159,27 +165,12 @@ public final class SemQuestServer {
         }
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        // CORS 放行：监控页以 file:// 打开，浏览器跨源调用（含 DELETE 前的 OPTIONS 预检）需显式应答
-        Filter cors = new Filter() {
-            public String description() { return "CORS 放行"; }
-            public void doFilter(HttpExchange x, Chain chain) throws IOException {
-                x.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
-                x.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-                x.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
-                if ("OPTIONS".equalsIgnoreCase(x.getRequestMethod())) {
-                    x.sendResponseHeaders(204, -1);
-                    return;
-                }
-                chain.doFilter(x);
-            }
-        };
-        HttpContext c0 = server.createContext("/", new StaticHandler(vizFile));
-        HttpContext c1 = server.createContext("/api/tables", new TablesHandler(tables, cfg, backend, tablesDir));
-        HttpContext c2 = server.createContext("/api/t/", new TableRouter(tables, cfg, backend, gstate));
-        HttpContext c3 = server.createContext("/api/models", new ModelsHandler(cfg, sel, timeoutMs));
-        HttpContext c4 = server.createContext("/api/model", new ModelHandler(cfg, backend, sel));
-        HttpContext c5 = server.createContext("/api/growth", new GrowthHandler(cfg, gstate, timeoutMs));
-        for (HttpContext c : new HttpContext[]{ c0, c1, c2, c3, c4, c5 }) c.getFilters().add(cors);
+        server.createContext("/", new StaticHandler(vizFile));
+        server.createContext("/api/tables", new TablesHandler(tables, cfg, backend, tablesDir));
+        server.createContext("/api/t/", new TableRouter(tables, cfg, backend, gstate));
+        server.createContext("/api/models", new ModelsHandler(cfg, sel, timeoutMs));
+        server.createContext("/api/model", new ModelHandler(cfg, backend, sel));
+        server.createContext("/api/growth", new GrowthHandler(cfg, gstate, timeoutMs));
         server.setExecutor(Executors.newFixedThreadPool(4));
         server.start();
         System.out.println("问义树可视化服务已启动: http://localhost:" + port
@@ -236,6 +227,14 @@ public final class SemQuestServer {
                             }
                             System.out.println("[热载] 表「" + t.name + "」查询缓存容量 → "
                                     + (qc == 0 ? "关闭" : qc));
+                        }
+                        // doc 过滤组热载（on/批次/门控/截断/总量上限；setDocFilter 值变化时内部清查询缓存）
+                        for (Table t : tables.values()) {
+                            synchronized (t) {
+                                if (applyDocFilter(cfg, t.tree)) {
+                                    System.out.println("[热载] 表「" + t.name + "」doc 过滤配置 → 已更新");
+                                }
+                            }
                         }
                         // 提示词热载：全部来自提示词文件；装载失败（路径未配置/文件不可读/空白）即保留旧值
                         SemQuestTree.Prompts np = null;
@@ -677,6 +676,7 @@ public final class SemQuestServer {
                             PromptLoader.rule(cfg, "prompt.rule.add"),
                             PromptLoader.rule(cfg, "prompt.rule.search"));
                     tree.setQuestCacheCap(Math.max(0, cfg.getInt("questCacheSize", 256)));
+                    applyDocFilter(cfg, tree);
                     tree.setPrompts(PromptLoader.of(cfg));
                     Table t = new Table(id, name, note, System.currentTimeMillis(), false, tree,
                             tablesDir.resolve(id + ".json"),
@@ -1341,7 +1341,8 @@ public final class SemQuestServer {
                         cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
                         growthModelOf(cfg, gstate),
                         apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
-                        cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null), null);
+                        cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null),
+                        cfg.get("growth.extend.prompt", null));
             } catch (IllegalStateException e) {
                 // 提示词文件装载失败：不外抛，记入 growthStep.failed（与生成失败同路径）
                 growthStep(out, parent, 0, 0, 0, 0, null, null, "生长提示词装载失败: " + e.getMessage());
@@ -1451,7 +1452,7 @@ public final class SemQuestServer {
         return new CriterionGenerator.OpenRouterGenerator(
                 cfg.get("growth.url", "https://openrouter.ai/api/v1/chat/completions"),
                 growthModelOf(cfg, gstate),
-                apiKey, cfg.getInt("timeoutMs", 30000), null,
+                apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
                 cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null),
                 cfg.get("growth.extend.prompt", null));
     }
@@ -1459,6 +1460,16 @@ public final class SemQuestServer {
     /** 延伸水位：growth.splitAt × growth.splitFactor（默认 255×0.7=178），≤0 视为关闭水位触发。 */
     private static int extendWatermark(Config cfg) {
         return (int) Math.round(cfg.getInt("growth.splitAt", 255) * cfg.getDouble("growth.splitFactor", 0.7));
+    }
+
+    /** doc 过滤组配置读取并应用到树（代码默认关；另须 prompt.docfilter.criterion 模板就位才实际过滤）。返回是否发生变化。 */
+    private static boolean applyDocFilter(Config cfg, SemQuestTree tree) {
+        boolean on = "true".equalsIgnoreCase(cfg.get("docFilter", "false"));
+        return tree.setDocFilter(on,
+                cfg.getInt("docFilter.batch", 20),
+                cfg.getDouble("docFilterGate", 0.6),
+                cfg.getInt("docFilter.maxLen", 200),
+                cfg.getInt("docFilter.maxDocs", 100));
     }
 
     /**
@@ -1894,6 +1905,15 @@ public final class SemQuestServer {
                 return;
             }
             String query = ((String) qv).trim();
+            // confirm（可选，默认 false）：doc 过滤超量时控制是否跳过确认直接执行（confirmRequired 流程第二步）
+            boolean confirm = Boolean.TRUE.equals(req.get("confirm"));
+            // doc 直取：query 为 doc id 或 doc 原文（trim 精确一致）→ 直接返回该 doc 的落位（零模型调用）
+            try {
+                json(ex, 200, Json.write(docQuestMap(t.tree.locateDocs(query), query)));
+                return;
+            } catch (IllegalArgumentException notDoc) {
+                // 非 doc id/原文 → 节点名直取 / 自然语言检索
+            }
             // 节点名直取：查询与节点名完全一致 → 直接返回该节点子树内容（零模型调用，复用节点直取逻辑）
             try {
                 json(ex, 200, Json.write(nodeQuestMap(t.tree.nodeDocs(query))));
@@ -1902,7 +1922,7 @@ public final class SemQuestServer {
                 // 非节点名 → 走自然语言检索
             }
             try {
-                SemQuestTree.QuestReport rep = t.tree.quest(query);
+                SemQuestTree.QuestReport rep = t.tree.quest(query, confirm);
                 Map<String, Object> out = questMap(t.tree, rep);
                 // 纯读：检索只按现有结构下行，查不到就是查不到——不为查询改树（生长在 add/addBatch 触发）
                 json(ex, 200, Json.write(out));
@@ -1938,6 +1958,38 @@ public final class SemQuestServer {
         out.put("ranked", ranked);
         out.put("steps", new ArrayList<Object>());
         out.put("stats", "节点直取 · " + nd.docs.size() + " 条 · 零模型调用");
+        return out;
+    }
+
+    /** doc 直取 → quest 形响应：ranked=命中 doc（viaLeaves=落位叶，score=落位叶数）、steps 空、fastPath=true。
+     *  locate=id/content 标记命中方式；同原文多 doc 全部返回，按 id 排序稳定展示。 */
+    private static Map<String, Object> docQuestMap(SemQuestTree.LocateReport lr, String query) {
+        Set<String> allLeaves = new LinkedHashSet<String>();
+        List<SemQuestTree.LocatedDoc> sorted = new ArrayList<SemQuestTree.LocatedDoc>(lr.docs);
+        Collections.sort(sorted, new Comparator<SemQuestTree.LocatedDoc>() {
+            public int compare(SemQuestTree.LocatedDoc a, SemQuestTree.LocatedDoc b) {
+                return a.id.compareTo(b.id);
+            }
+        });
+        List<Object> ranked = new ArrayList<Object>();
+        for (SemQuestTree.LocatedDoc d : sorted) {
+            allLeaves.addAll(d.leaves);
+            LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("docId", d.id);
+            m.put("score", (double) d.leaves.size());
+            m.put("viaLeaves", d.leaves);
+            m.put("content", d.content);
+            ranked.add(m);
+        }
+        LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("query", query);
+        out.put("fastPath", Boolean.TRUE);
+        out.put("locate", lr.mode);
+        out.put("matchedLeaves", new ArrayList<Object>(allLeaves));
+        out.put("ranked", ranked);
+        out.put("steps", new ArrayList<Object>());
+        out.put("stats", "doc 直取（" + ("id".equals(lr.mode) ? "id 精确" : "原文精确") + "） · "
+                + sorted.size() + " 条 · 零模型调用");
         return out;
     }
 
@@ -2131,7 +2183,7 @@ public final class SemQuestServer {
         return out;
     }
 
-    /** quest 响应组装：命中叶 + 排序文档（补正文）+ 判定轨迹 + 统计行。 */
+    /** quest 响应组装：命中叶 + 排序文档（补正文）+ doc 过滤摘要 + 判定轨迹 + 统计行。 */
     private static Map<String, Object> questMap(SemQuestTree tree, SemQuestTree.QuestReport rep) {
         Map<String, String> contents = new LinkedHashMap<String, String>();
         for (Object o : tree.docsSnapshot()) {
@@ -2152,11 +2204,53 @@ public final class SemQuestServer {
             m.put("score", rd.score);
             m.put("viaLeaves", rd.viaLeaves);
             m.put("content", contents.get(rd.docId));
+            m.put("docP", rd.docP);   // doc 过滤 P(相关)；未过滤恒 1.0
             ranked.add(m);
         }
         out.put("ranked", ranked);
-        out.put("steps", stepsJson(rep.steps));
+        LinkedHashMap<String, Object> df = new LinkedHashMap<String, Object>();
+        df.put("total", rep.docFilterTotal);           // 去重待过滤 doc 总数（未执行=0）
+        df.put("kept", rep.docFilterKept);             // 过滤后保留数（未执行=0）
+        df.put("calls", rep.docFilterCalls);           // 过滤判定批次数
+        df.put("confirmRequired", rep.confirmRequired); // true=总量超上限且未确认：ranked 为未过滤全量，带 confirm=true 重发执行
+        out.put("docFilter", df);
+        out.put("steps", questStepsJson(tree, rep.steps, contents));
         out.put("stats", tree.statsLine());
+        return out;
+    }
+
+    /** quest 轨迹 JSON：通用字段同 stepsJson；DOC_FILTER 步骤另附每条 doc 的原文与判定详情
+     *  （content=doc 原文、p=判定 P(相关)、kept=是否过 docFilterGate 采纳线——viz 点击展开逐条查看，
+     *  含被滤掉的 doc：ranked 只露过门内容，被判掉的只在轨迹详情可见）。 */
+    private static List<Object> questStepsJson(SemQuestTree tree, List<SemQuestTree.Step> steps,
+                                               Map<String, String> contents) {
+        double gate = tree.docFilterGate();
+        List<Object> out = new ArrayList<Object>();
+        for (SemQuestTree.Step s : steps) {
+            LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("node", s.node);
+            m.put("probs", s.probs);
+            if (s.choice != null) {
+                m.put("choice", s.choice);
+                m.put("confidence", s.confidence);
+            }
+            m.put("latencyMs", s.latencyMs);
+            m.put("inputTokens", s.inputTokens);
+            m.put("outputTokens", s.outputTokens);
+            if ("DOC_FILTER".equals(s.node) && s.probs != null && !s.probs.isEmpty()) {
+                List<Object> docs = new ArrayList<Object>();
+                for (Map.Entry<String, Double> e : s.probs.entrySet()) {
+                    LinkedHashMap<String, Object> d = new LinkedHashMap<String, Object>();
+                    d.put("docId", e.getKey());
+                    d.put("content", contents.get(e.getKey()));
+                    d.put("p", e.getValue());
+                    d.put("kept", Boolean.valueOf(e.getValue() != null && e.getValue() >= gate));
+                    docs.add(d);
+                }
+                m.put("docs", docs);
+            }
+            out.add(m);
+        }
         return out;
     }
 

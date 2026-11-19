@@ -164,26 +164,32 @@
 
 ### POST /api/t/&lt;id&gt;/quest [模型]
 
-检索（纯读）：自然语言查询沿判据树语义下行，命中叶上的文档按分排序返回——查不到就是查不到，**不为查询改树**（生长只在 add/addBatch 落兜底时触发）。**节点名直取**：查询与节点名完全一致时不调模型，直接返回该节点子树全部叶的落位内容（复用节点直取；`fastPath:true`、`steps` 空数组、`matchedLeaves`=子树叶名、score=文档在子树内的落位叶数、stats 标「节点直取 · N 条 · 零模型调用」）。noul 检索与落位同条件镜像：某层零分支过门即命中该层兜底叶（`X_OTHER`），其存量文档照常返回；choice 单路径，途中胜出兜底项即无命中。查询结果缓存：同一条查询（原文完全一致）再次检索时直接返回上次结果（`fastPath:true`，零模型调用，`steps` 为首次慢路轨迹的原样复放），noul / choice 均生效。缓存按命中次数排序淘汰（调用最多的条目最不易淘汰，次数最少的先出局），容量 `questCacheSize` 在 semquest.properties 配置（默认 256，0=关闭），保存配置热载；**任何表变更（落位 / 加改删节点 / 调门控 / 提示词热载）即清空该表全部缓存**，缓存仅内存不落盘。
+检索（纯读）：自然语言查询沿判据树语义下行，命中叶上的文档按分排序返回——查不到就是查不到，**不为查询改树**（生长只在 add/addBatch 落兜底时触发）。**doc 直取**：查询与某条 doc 的 id 或原文（trim 后精确一致）完全一致时不调模型，直接返回该 doc 的落位（`fastPath:true`、`locate`="id"|"content" 标记命中方式、同原文多 doc 全返回、score=落位叶数、stats 标「doc 直取 · N 条 · 零模型调用」）。**节点名直取**：查询与节点名完全一致时不调模型，直接返回该节点子树全部叶的落位内容（复用节点直取；`fastPath:true`、`steps` 空数组、`matchedLeaves`=子树叶名、score=文档在子树内的落位叶数、stats 标「节点直取 · N 条 · 零模型调用」）。noul 检索与落位同条件镜像：某层零分支过门即命中该层兜底叶（`X_OTHER`），其存量文档照常返回；choice 单路径，途中胜出兜底项即无命中。查询结果缓存：同一条查询（原文完全一致）再次检索时直接返回上次结果（`fastPath:true`，零模型调用，`steps` 为首次慢路轨迹的原样复放），noul / choice 均生效。缓存按命中次数排序淘汰（调用最多的条目最不易淘汰，次数最少的先出局），容量 `questCacheSize` 在 semquest.properties 配置（默认 256，0=关闭），保存配置热载；**任何表变更（落位 / 加改删节点 / 调门控 / 提示词热载）即清空该表全部缓存**，缓存仅内存不落盘。
 
-**入参** `{query}`。
+**入参** `{query, confirm?}`（confirm 默认 false：doc 过滤待过滤总量超 `docFilter.maxDocs` 时须置 true 才执行，见下）。
 
 **出参**：
 
 | 字段 | 说明 |
 | --- | --- |
 | `query` | 原查询 |
-| `fastPath` | true = 缓存直出（零模型调用，结果与首次判定一致） |
+| `fastPath` | true = 缓存直出 / doc·节点直取（零模型调用，结果与首次判定一致） |
+| `locate` | 仅 doc 直取："id"\|"content" 命中方式 |
 | `matchedLeaves` | 命中叶名（noul：过门分支，某层零分支过门时含该层兜底叶；choice：单路径末叶） |
-| `ranked` | `[{docId, score, viaLeaves(该文档命中的叶), content}]`；score：noul=命中叶数，choice=路径各层胜出概率连乘 |
-| `steps` | 判定轨迹（缓存直出时为首次慢路轨迹的复放） |
+| `ranked` | `[{docId, score, viaLeaves(该文档命中的叶), content, docP}]`；score：noul=命中叶数，choice=路径各层胜出概率连乘；docP=doc 过滤判定的 P(相关)（未执行过滤恒 1.0） |
+| `docFilter` | doc 过滤摘要 `{total(去重待过滤数), kept(过滤后保留数), calls(判定批次数), confirmRequired}`；未开启/未执行时 total/kept/calls 为 0 |
+| `steps` | 判定轨迹（缓存直出时为首次慢路轨迹的复放；doc 过滤每批一条 `node=DOC_FILTER` 的轨迹，见下） |
 | `stats` | 本次会话累计账单文本行（缓存直出零调用，不计入） |
+
+**doc 过滤（confirmRequired 流程）**：`docFilter=true` 开启后（semquest.properties 热载），查询下行命中叶后对叶内内容逐条判定「与查询相关」，P(相关) ≥ `docFilterGate` 才进 `ranked`——层判定只保证叶子相关（「车」叶），doc 过滤补齐判定链最后一环（只放行「火车」）。跨命中叶去重后按 `docFilter.batch` 分批打包判定（判据模板 `prompt.docfilter.criterion`，doc 原文按 `docFilter.maxLen` 截断）；待过滤总量超过 `docFilter.maxDocs` 且 `confirm=false` 时返回 `confirmRequired:true`（`ranked` 保持未过滤全量、结果不入缓存），客户端向用户确认花销后带 `confirm:true` 重发才执行。
 
 **错误**：400 缺 query；500 判定调用失败。
 
 ### `steps` 判定轨迹（add/quest 共用）
 
 每层一个元素：`{node(层节点名), probs:{节点名: P(yes) 或各项概率}, latencyMs, inputTokens, outputTokens}`；choice 模式额外带 `choice(胜出选项)` 与 `confidence(置信度)`。
+
+quest 的 doc 过滤批次轨迹（`node=DOC_FILTER`，probs key=docId）另附 `docs` 逐条详情：`[{docId, content(doc 原文), p(P(相关)), kept(是否过 docFilterGate 采纳线)}]`——viz 轨迹里可点击展开逐条查看；**被滤掉的 doc 不进 `ranked`，只在轨迹详情可见**。
 
 ### POST /api/t/&lt;id&gt;/gate [免费]
 

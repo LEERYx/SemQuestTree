@@ -430,6 +430,7 @@
       'quest.noHitNoul': '没有叶过门（沿途 P(yes) 均低于门控 {gate}）',
       'quest.noHitChoice': '没有命中（choice 单路径下行：途中置信度低于采纳线 {gate} 或落兜底即止）',
       'quest.noDocs': '（无命中文档）', 'quest.trace': '判定轨迹（{n} 次请求）',
+      'quest.dfStep': 'doc 过滤判定 · {kept}/{n} 过门 · 点击看每条内容',
             'quest.dfSummary': '🔍 doc 过滤 · 保留 {kept}/{total} · {calls} 次判定',
             'quest.dfConfirm': '本次检索命中 {n} 条待过滤内容，执行 doc 过滤将产生多次判定调用（有 token 花销）。是否继续？\n取消将返回未过滤结果。',
             'quest.dfUnfiltered': '⚠ 未执行 doc 过滤（内容量 {n} 超上限且未确认）',
@@ -575,6 +576,7 @@
       'quest.noHitNoul': 'No leaf passed the gate (every P(yes) along the way is below {gate})',
       'quest.noHitChoice': 'No hit (choice descends a single path: confidence below the accept line {gate} or a fallback ends the walk)',
       'quest.noDocs': '(no matching docs)', 'quest.trace': 'Decision trace ({n} requests)',
+      'quest.dfStep': 'doc filter · {kept}/{n} kept · click to inspect each',
             'quest.dfSummary': '🔍 doc filter · kept {kept}/{total} · {calls} calls',
             'quest.dfConfirm': 'This query hits {n} docs to filter; running the filter costs extra decision calls (tokens). Continue?\nCancel returns unfiltered results.',
             'quest.dfUnfiltered': '⚠ doc filter skipped ({n} docs over the limit, not confirmed)',
@@ -1845,8 +1847,22 @@
   function traceHtml(steps) {
     let html = '<details class="judge"><summary>' + esc(Tf('add.trace', { n: steps.length })) + '</summary>';
     for (const s of steps) {
-      html += '<div class="q-step"><b>@' + esc(s.node) + '</b> ' + stepLine(s) +
-          ' <span class="dim">[' + s.latencyMs + 'ms · in ' + s.inputTokens + ' / out ' + s.outputTokens + ']</span></div>';
+      if (s.node === 'DOC_FILTER' && s.docs && s.docs.length) {
+        // doc 过滤批次：可再展开看每条 doc 的原文与判定（含被滤掉的——ranked 只露过门内容）
+        const kept = s.docs.filter(x => x.kept).length;
+        html += '<details class="judge" style="margin:4px 0 4px 14px"><summary><b>@DOC_FILTER</b> ' +
+            esc(Tf('quest.dfStep', { kept: kept, n: s.docs.length })) +
+            ' <span class="dim">[' + s.latencyMs + 'ms · in ' + s.inputTokens + ' / out ' + s.outputTokens + ']</span></summary>';
+        for (const dd of s.docs) {
+          html += '<div class="q-step"><span class="doc-id">' + esc(dd.docId) + '</span> ' +
+              '<span class="dim">P ' + (dd.p == null ? '—' : (+dd.p).toFixed(2)) + (dd.kept ? ' ✓过门' : ' ✗滤除') + '</span>' +
+              '<div class="doc-content">' + esc(dd.content || '') + '</div></div>';
+        }
+        html += '</details>';
+      } else {
+        html += '<div class="q-step"><b>@' + esc(s.node) + '</b> ' + stepLine(s) +
+            ' <span class="dim">[' + s.latencyMs + 'ms · in ' + s.inputTokens + ' / out ' + s.outputTokens + ']</span></div>';
+      }
     }
     return html + '</details>';
   }
