@@ -130,7 +130,21 @@ bailian.url=your-bailian-endpoint-url
 bailian.model=decision-model-preview
 bailian.apikey=your-bailian-api-key
 
-# ── 手动模型清单（逗号分隔；配置即清单优先生效，保存即热载；留空回上游实时拉取）──
+# ── 手动模型清单（逗号分隔；配置即清单优先生效，保存即热载；留空回上游实时拉取 ）──
 jev.models=jev-1.13.0,jev-latest
 openrouter.models=
 bailian.models=decision-model-preview
+
+# ── 动作流（trace）──
+# viz 动作流默认开关（启动即开；运行时可在 viz 右上角 🔎 热切换，重启回到本配置；默认 true）
+trace.enabled=true
+
+# ── 类目意图截断（quest cat-scope）──
+# 检索下探途经内部节点时顺带一道 __cat__ 题：「查询所寻找的内容是否强包含该节点判据所囊括的全部内容」。
+# P(yes) ≥ questCatGate → 直接全量返回该节点子树全部落位内容（不下探、不过滤 docFilter）；
+# 判 no 即正常下探（行为与现状一致），「细问题但内容缺位」天然返回空。
+# ROOT 不带题；子树 doc 数超 questCatScope.maxDocs 时走 confirm 确认。默认开，模板缺省即禁用。
+questCatScope=true
+questCatGate=0.65
+questCatScope.maxDocs=200
+prompt.quest.catscope=prompts/cat-scope-prompt.txt

@@ -172,6 +172,54 @@
   #growthToggle { font-size: 13px; padding: 3px 9px; }
   #growthToggle.growth-on { color: #5eead4; border-color: #245743; background: #173229; }
   #growthModel { max-width: 150px; }
+  #traceToggle.growth-on { color: #5eead4; border-color: #245743; background: #173229; }
+
+  /* ── 动作流页签（🔎 追踪开关开启后：按请求分组的会话列表 + 单开弹层看完整动作流）── */
+  #tab-trace { flex: 1; overflow: auto; padding: 0 12px 16px; }
+  .trace-hint { font-size: 12px; color: #8b95a5; line-height: 1.7; margin-bottom: 10px; }
+  .trace-row { display: flex; align-items: baseline; gap: 6px; padding: 6px 8px;
+    border-bottom: 1px solid #1d242f; font-size: 12.5px; }
+  .trace-row .tr-ic { flex: none; }
+  .trace-row .tr-ts { flex: none; color: #6b7688; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .trace-row .tr-title { flex: 1; color: #c6cdd8; word-break: break-all; }
+  .trace-row .tr-ms { flex: none; color: #6b7688; font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
+  .trace-row .tr-detail { flex: none; padding: 1px 8px; font-size: 11.5px; }
+  /* 会话行（一请求一动作流）：可点开看该请求完整动作流 */
+  .trace-sess { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px;
+    border: 1px solid #1d242f; border-radius: 8px; margin-bottom: 6px; font-size: 12.5px;
+    cursor: pointer; }
+  .trace-sess:hover { border-color: #245743; background: #10141b; }
+  .trace-sess .tr-ic { flex: none; }
+  .trace-sess .tr-act { flex: none; color: #5eead4; font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px; padding: 1px 7px; border: 1px solid #23303c; border-radius: 9px; }
+  .trace-sess .tr-title { flex: 1; color: #c6cdd8; word-break: break-all; }
+  .trace-sess .tr-ts, .trace-sess .tr-cnt { flex: none; color: #6b7688; font-size: 11px;
+    font-family: ui-monospace, Menlo, monospace; }
+  .trace-dlg { width: 680px; max-width: 92vw; max-height: 86vh; overflow-y: auto; }   /* 内容多时弹层内滚动，不超出屏幕 */
+  .tr-tok { flex: none; color: #e0b56a; font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px; padding: 1px 7px; border: 1px solid #3d3320; border-radius: 9px; }   /* token 徽章 */
+  .trace-dlg .tr-meta { font-size: 11.5px; color: #6b7688; font-family: ui-monospace, Menlo, monospace; margin-bottom: 10px; }
+  .trace-dlg h4 { font-size: 12.5px; color: #8b95a5; margin: 12px 0 6px; }
+  .trace-dlg pre.tr-json { background: #0e1116; border: 1px solid #2a323f; border-radius: 6px;
+    color: #a8d5c2; padding: 10px 12px; font-size: 11.5px; line-height: 1.55;
+    max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+    font-family: ui-monospace, Menlo, monospace; }
+  .trace-dlg details { margin-top: 8px; }
+  .trace-dlg summary { cursor: pointer; font-size: 12.5px; color: #5eead4; margin-bottom: 6px; }
+  .trace-more { text-align: center; padding: 8px 0 2px; color: #5eead4; font-size: 12.5px;
+    cursor: pointer; border-top: 1px dashed #2a323f; margin-top: 6px; }
+  .trace-more:hover { color: #7cf0dc; }
+  .tr-rb { flex: none; font-size: 11.5px; padding: 2px 9px; }
+  .rb-badge { flex: none; font-size: 11px; color: #e8b64c; border: 1px solid #4a3b1c; border-radius: 9px; padding: 1px 8px; }
+
+  /* 节点详情维度分（0~5 三位小数 + 进度条） */
+  .d-dim { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 12px; }
+  .d-dim .dim-tag { color: #8b95a5; }
+  .d-dim .dim-val { color: #5eead4; font-family: ui-monospace, Menlo, monospace; }
+  .d-dim .dim-bar { flex: none; width: 120px; height: 6px; background: #1d242f; border-radius: 3px; overflow: hidden; }
+  .d-dim .dim-fill { display: block; height: 100%; background: linear-gradient(90deg, #f2d38b, #5eead4); border-radius: 3px; }
+  .dim-mini { flex: none; color: #5eead4; font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+    padding: 1px 7px; border: 1px solid #23303c; border-radius: 9px; }
 
   /* ── 开始页（全部表）────────────────────────────────────────── */
   #startView { flex: 1; overflow: auto; padding: 22px 28px 60px; }
@@ -256,12 +304,15 @@
     <select id="model" data-i18n-title="hdr.modelTitle"></select>
     <button class="btn" id="growthToggle" style="display:none">🌱</button>
     <select id="growthModel" style="display:none" data-i18n-title="hdr.growthModelTitle"></select>
+    <button class="btn" id="traceToggle" style="display:none" data-i18n-title="trace.offTitle">🔎</button>
   </div>
   <div class="hstats">
     <span id="stats"></span>
     <label class="gate-lb" id="gateLb" style="display:none" title="">
       <span id="gateLbTxt">门控</span>
-      <input id="gate" type="number" min="0.05" max="1" step="0.05" value="0.7">
+      <input id="addGate" type="number" min="0.05" max="1" step="0.05" value="0.5">
+      <input id="questGate" type="number" min="0.05" max="1" step="0.05" value="0.3">
+      <input id="choiceGate" type="number" min="0.05" max="1" step="0.05" value="0.6">
     </label>
     <button class="btn" id="langBtn" data-i18n-title="lang.title">EN</button>
   </div>
@@ -317,10 +368,16 @@
     <div class="tabs">
       <button class="tab active" data-tab="detail" data-i18n="tab.detail">节点详情</button>
       <button class="tab" data-tab="quest" data-i18n="tab.quest">控制台</button>
+      <button class="tab" data-tab="trace" data-i18n="tab.trace">动作流</button>
     </div>
     <div id="tab-detail">
       <div id="detailEmpty" class="empty" data-i18n-html="detail.empty">点击左侧任意节点<br>展示该节点的路径、判据与落位数据（内部节点含子节点列表）<br><span>未点击不显示任何内容</span></div>
       <div id="detail" style="display:none"></div>
+    </div>
+    <div id="tab-trace" style="display:none">
+      <div class="trace-hint" id="traceHint" data-i18n-html="trace.hint"></div>
+      <div id="traceEmpty" class="empty" data-i18n-html="trace.empty">暂无动作流<br><span>点开右上角 🔎 开关后，每次 add / quest / 生长请求产生一个独立动作流（按请求分组，文件存档），点开任一条可看该请求的完整动作流去追溯</span></div>
+      <div id="traceList"></div>
     </div>
     <div id="tab-quest" style="display:none">
       <div class="q-modes" id="q-mainmodes">
@@ -357,8 +414,9 @@
       'hdr.modelFilterPh': '筛模型…',
       'hdr.docs': '落位 {n} 条',
       'lang.title': '切换语言 / Switch language',
-      'gate.noul': '门控', 'gate.choice': '采纳线',
-      'gate.noulTitle': 'noul 绝对门控 (0, 1]，只影响其后的判定',
+      'gate.add': '落位', 'gate.quest': '检索', 'gate.choice': '采纳线',
+      'gate.addTitle': '落位门控 (0,1]：P≥此值收编入类（0.5 从严，宁落兜底不进错类）',
+      'gate.questTitle': '检索门控 (0,1]：P≥此值命中返回（0.3 从松，宁宽进不错过）',
       'gate.choiceTitle': 'choice 采纳线 (0, 1]：单层胜出置信度低于此值落兜底',
       'start.sub': '全部表 · 一张表是一棵判据树',
       'nt.namePh': '表名（必填）', 'nt.notePh': '备注（可选，显示在卡片上）', 'nt.go': '新建表',
@@ -391,7 +449,7 @@
       'toast.extendRunning': '「{node}」已在延伸中',
       'toast.extendFail': '触发延伸失败',
       'tree.expandAll': '全部展开', 'tree.loading': '加载中…',
-      'tab.detail': '节点详情', 'tab.quest': '控制台',
+      'tab.detail': '节点详情', 'tab.quest': '控制台', 'tab.trace': '动作流',
       'detail.empty': '点击左侧任意节点<br>展示该节点的路径、判据与落位数据（内部节点含子节点列表）<br><span>未点击不显示任何内容</span>',
       'detail.loading': '沿路径查询中…',
       'detail.subtreeDocs': '子树落位 {n} 条', 'detail.leafDocs': '{n} 条落位',
@@ -432,6 +490,8 @@
       'quest.noDocs': '（无命中文档）', 'quest.trace': '判定轨迹（{n} 次请求）',
       'quest.dfStep': 'doc 过滤判定 · {kept}/{n} 过门 · 点击看每条内容',
             'quest.dfSummary': '🔍 doc 过滤 · 保留 {kept}/{total} · {calls} 次判定',
+            'quest.catScope': '📂 类目意图命中 @ {node} · 全量返回 {n} 条（未过滤）',
+            'quest.catConfirm': '类目意图命中 @ {node}，子树共 {n} 条内容，全量返回量大（可能非本意）。确认全部返回？',
             'quest.dfConfirm': '本次检索命中 {n} 条待过滤内容，执行 doc 过滤将产生多次判定调用（有 token 花销）。是否继续？\n取消将返回未过滤结果。',
             'quest.dfUnfiltered': '⚠ 未执行 doc 过滤（内容量 {n} 超上限且未确认）',
             'quest.docP': 'P相关 {p}',
@@ -450,19 +510,18 @@
       'dlg.scopeNoulInternal': '将对其兜底叶 {other} 的存量逐条重判（每条 1 次请求），过门迁入新节点',
       'dlg.scopeChoiceLeaf': '该叶将分化为本层的一个选项；父层相关存量按完整选项列表重判（每条 1 次请求），选中此项则迁入',
       'dlg.scopeChoiceInternal': '将在该层新增一个选项；父层兜底存量按完整选项列表重判（每条 1 次请求），选中此项则迁入',
-      'dlg.critHint': '。判据用中文事件级原子断言。',
+      'dlg.critHint': '。判据用中文属性解释（语义域抽象描述）。',
       'dlg.nameLabelNoul': '节点名 NAME', 'dlg.nameLabelChoice': '选项名（新分支）',
       'dlg.namePhNoul': '输入节点名', 'dlg.namePhChoice': '输入选项名',
-      'dlg.yesLabelNoul': 'yes 判据（是侧原子断言）', 'dlg.yesLabelChoice': '选项描述（可选；留空用选项名本身）',
-      'dlg.yesPhNoul': '描述应落入该分支的内容特征（事件级原子断言）…', 'dlg.yesPhChoice': '描述该选项涵盖的内容…',
-      'dlg.noLabel': 'no 判据（留空自动生成）',
+      'dlg.addLabelNoul': '属性解释（语义域抽象描述）', 'dlg.addLabelChoice': '选项描述（可选；留空用选项名本身）',
+      'dlg.addPhNoul': '描述该分支语义域覆盖的主题与表达（连贯描述句，禁名词列举）…', 'dlg.addPhChoice': '描述该选项涵盖的内容…',
       'dlg.create': '创建', 'dlg.cancel': '取消', 'dlg.save': '保存',
-      'dlg.errNoul': '节点名与 yes 判据必填', 'dlg.errChoice': '选项名必填', 'dlg.errNameEmpty': '名称不可为空',
+      'dlg.errNoul': '节点名与属性解释必填', 'dlg.errChoice': '选项名必填', 'dlg.errNameEmpty': '名称不可为空',
       'dlg.growFail': '增长失败', 'dlg.editFail': '修改失败', 'dlg.delFail': '删除失败',
       'dlg.editTitleNoul': '修改节点 {name}', 'dlg.editTitleChoice': '修改选项 {name}',
-      'dlg.editNote': '零模型调用。改名会连带重命名兜底叶并更新落位指针；改判据不重判已落位数据（后续落位/检索按新判据收正）。修改记录随快照持久化，重启自动回放。',
+      'dlg.editNote': '零模型调用。改名会连带重命名兜底叶并更新落位指针；改属性解释不重判已落位数据（后续落位/检索按新判据收正）。修改记录随快照持久化，重启自动回放。',
       'dlg.edNameNoul': '节点名', 'dlg.edNameChoice': '选项名',
-      'dlg.edYesNoul': 'yes 判据（是侧原子断言；留空不改）', 'dlg.edYesChoice': '选项描述（可选；留空保持）',
+      'dlg.edAddNoul': '属性解释（留空不改）', 'dlg.edAddChoice': '选项描述（可选；留空保持）',
       'dlg.delTitle': '删除 {name}？', 'dlg.delNote': '将同时删除其全部子节点（含兜底叶），并清理这些叶上的全部落位数据，此操作不可撤销。',
       'toast.added': '已新增 {node} · 重判 {judged} 条', 'toast.movedIn': ' · 迁入: ', 'toast.movedNone': ' · 无存量迁入',
       'toast.editDone': '已修改 {name}', 'toast.renamed': '（原 {old}）',
@@ -490,6 +549,29 @@
       'growth.switchedOn': '已开启自我生长：add 落兜底将当场长新分支收编本条',
       'growth.switchedOff': '已关闭自我生长',
       'growth.switchFail': '生长设置失败',
+      'trace.onTitle': '动作追踪已开启（点击关闭）',
+      'trace.offTitle': '动作追踪已关闭（点击开启：记录每次 add/quest/生长的全部动作与完整模型请求/响应体）',
+      'trace.switchedOn': '已开启动作追踪：每次 add / quest / 生长请求产生一个独立动作流（按请求分组，文件存档 traces/，重启不丢；点开任一条看完整动作流）',
+      'trace.switchedOff': '已关闭动作追踪',
+      'trace.switchFail': '追踪设置失败',
+      'trace.hint': '🔎 追踪开启时，每次请求产生一个独立动作流（按请求分组）：决策批量判定、判据/维度生成、存量重判、维度验收、横向/纵向生长、回滚。点开任一条可看该请求的完整动作流去追溯；存档在 traces/ 目录，重启后仍可单开查看。',
+      'trace.empty': '暂无动作流<br><span>点开右上角 🔎 开关后，每次 add / quest / 生长请求产生一个独立动作流（按请求分组，文件存档），点开任一条可看该请求的完整动作流去追溯</span>',
+      'trace.sessFlow': '动作流（事件按序）',
+      'trace.sessFile': '存档文件',
+      'trace.detail': '详情',
+      'trace.detailInfo': '关键信息',
+      'trace.req': '▸ 完整请求体',
+      'trace.resp': '▸ 完整响应体',
+      'detail.dim': '维度',
+      'trace.showAll': '全部事件',
+      'trace.showAllSess': '全部会话（{n}）',
+      'trace.collapseSess': '收起',
+      'trace.eventsUnit': '事件',
+      'trace.rb': '回退',
+      'trace.rbBadge': '已回退',
+      'trace.rbConfirm': '确认回退？将撤销这次请求产生的全部变化（落位与生长），回到之前的状态：\n「{title}」',
+      'trace.rbDone': '已回退',
+      'trace.rbFail': '回退失败',
       'growth.modelSwitched': '生成模型 → {model}',
     },
     en: {
@@ -503,8 +585,9 @@
       'hdr.modelFilterPh': 'Filter models…',
       'hdr.docs': '{n} docs placed',
       'lang.title': 'Switch language / 切换语言',
-      'gate.noul': 'Gate', 'gate.choice': 'Accept line',
-      'gate.noulTitle': 'noul absolute gate (0, 1]; only affects subsequent decisions',
+      'gate.add': 'Place', 'gate.quest': 'Search', 'gate.choice': 'Accept line',
+      'gate.addTitle': 'Placement gate (0,1]: docs with P ≥ gate are collected (0.5 strict — prefer fallback over wrong class)',
+      'gate.questTitle': 'Search gate (0,1]: queries with P ≥ gate hit (0.3 lenient — prefer wide entry over miss)',
       'gate.choiceTitle': 'choice accept line (0, 1]: a win with confidence below it falls back',
       'start.sub': 'All tables · one table = one criteria tree',
       'nt.namePh': 'Table name (required)', 'nt.notePh': 'Note (optional, shown on the card)', 'nt.go': 'New table',
@@ -537,7 +620,7 @@
       'toast.extendRunning': '"{node}" is already extending',
       'toast.extendFail': 'Failed to trigger extend',
       'tree.expandAll': 'Expand all', 'tree.loading': 'Loading…',
-      'tab.detail': 'Node detail', 'tab.quest': 'Console',
+      'tab.detail': 'Node detail', 'tab.quest': 'Console', 'tab.trace': 'Action stream',
       'detail.empty': 'Click any node on the left<br>to see its path, criteria and placed docs (internal nodes list children)<br><span>Nothing shows until you click</span>',
       'detail.loading': 'Resolving path…',
       'detail.subtreeDocs': '{n} docs under subtree', 'detail.leafDocs': '{n} docs placed',
@@ -578,6 +661,8 @@
       'quest.noDocs': '(no matching docs)', 'quest.trace': 'Decision trace ({n} requests)',
       'quest.dfStep': 'doc filter · {kept}/{n} kept · click to inspect each',
             'quest.dfSummary': '🔍 doc filter · kept {kept}/{total} · {calls} calls',
+            'quest.catScope': '📂 Category intent hit @ {node} · all {n} docs returned (unfiltered)',
+            'quest.catConfirm': 'Category intent hit @ {node} with {n} docs in total; returning all is heavy and may be unintended. Return all?',
             'quest.dfConfirm': 'This query hits {n} docs to filter; running the filter costs extra decision calls (tokens). Continue?\nCancel returns unfiltered results.',
             'quest.dfUnfiltered': '⚠ doc filter skipped ({n} docs over the limit, not confirmed)',
             'quest.docP': 'P(relevance) {p}',
@@ -596,19 +681,18 @@
       'dlg.scopeNoulInternal': 'Docs on its fallback leaf {other} are re-judged one by one (1 request each); passing ones move into the new node',
       'dlg.scopeChoiceLeaf': 'This leaf will differentiate into an option of this level; related docs are re-judged against the full option list (1 request each) and move in if this option wins',
       'dlg.scopeChoiceInternal': 'A new option joins this level; fallback docs are re-judged against the full option list (1 request each) and move in if this option wins',
-      'dlg.critHint': '. Criteria are event-level atomic assertions.',
+      'dlg.critHint': '. Criteria are Chinese attribute descriptions (abstract domain descriptions).',
       'dlg.nameLabelNoul': 'Node NAME', 'dlg.nameLabelChoice': 'Option name (new branch)',
       'dlg.namePhNoul': 'Branch name', 'dlg.namePhChoice': 'Option name',
-      'dlg.yesLabelNoul': 'yes criterion (YES-side atomic assertion)', 'dlg.yesLabelChoice': 'Option description (optional; empty = use the name)',
-      'dlg.yesPhNoul': 'Describe the content that belongs to this branch (event-level atomic assertion)…', 'dlg.yesPhChoice': 'Describe the content this option covers…',
-      'dlg.noLabel': 'no criterion (empty = auto-generated)',
+      'dlg.addLabelNoul': 'Attribute description (abstract domain description)', 'dlg.addLabelChoice': 'Option description (optional; empty = use the name)',
+      'dlg.addPhNoul': 'Describe the semantic domain this branch covers (coherent description; no noun lists)…', 'dlg.addPhChoice': 'Describe the content this option covers…',
       'dlg.create': 'Create', 'dlg.cancel': 'Cancel', 'dlg.save': 'Save',
-      'dlg.errNoul': 'Node name and yes criterion are required', 'dlg.errChoice': 'Option name is required', 'dlg.errNameEmpty': 'Name cannot be empty',
+      'dlg.errNoul': 'Node name and attribute description are required', 'dlg.errChoice': 'Option name is required', 'dlg.errNameEmpty': 'Name cannot be empty',
       'dlg.growFail': 'Grow failed', 'dlg.editFail': 'Edit failed', 'dlg.delFail': 'Delete failed',
       'dlg.editTitleNoul': 'Edit node {name}', 'dlg.editTitleChoice': 'Edit option {name}',
       'dlg.editNote': 'Zero model calls. Renaming also renames the fallback leaf and updates placement pointers; editing criteria does not re-judge placed docs (later add/quest self-corrects). Edits persist with the snapshot and replay on restart.',
       'dlg.edNameNoul': 'Node name', 'dlg.edNameChoice': 'Option name',
-      'dlg.edYesNoul': 'yes criterion (YES-side atomic assertion; empty = keep)', 'dlg.edYesChoice': 'Option description (optional; empty = keep)',
+      'dlg.edAddNoul': 'Attribute description (empty = keep)', 'dlg.edAddChoice': 'Option description (optional; empty = keep)',
       'dlg.delTitle': 'Delete {name}?', 'dlg.delNote': 'Also deletes all its children (including fallback leaves) and clears every doc placed on them. This cannot be undone.',
       'toast.added': 'Added {node} · re-judged {judged}', 'toast.movedIn': ' · moved in: ', 'toast.movedNone': ' · nothing moved',
       'toast.editDone': 'Edited {name}', 'toast.renamed': ' (was {old})',
@@ -636,6 +720,29 @@
       'growth.switchedOn': 'Self-growth enabled: fallback adds will grow new branches on the spot',
       'growth.switchedOff': 'Self-growth disabled',
       'growth.switchFail': 'Growth setting failed',
+      'trace.onTitle': 'Action tracing ON (click to turn off)',
+      'trace.offTitle': 'Action tracing OFF (click to enable: every add/quest/growth action with full model request/response bodies)',
+      'trace.switchedOn': 'Action tracing enabled: each add / quest / growth request produces its own grouped action flow (archived to traces/, survives restart; open one to trace the full flow)',
+      'trace.switchedOff': 'Action tracing disabled',
+      'trace.switchFail': 'Failed to set tracing',
+      'trace.hint': 'With 🔎 tracing on, each request produces its own grouped action flow: decision batch calls, criterion/dimension generation, re-judging, dimension checks, horizontal/vertical growth, rollbacks. Open any entry to trace the full flow of that request; archives live under traces/ and remain viewable after restart.',
+      'trace.empty': 'No action flows yet<br><span>Turn on the 🔎 toggle in the header: each add / quest / growth request gets its own grouped, archived flow — open any entry to inspect the full flow</span>',
+      'trace.sessFlow': 'Action flow (events in order)',
+      'trace.sessFile': 'Archive file',
+      'trace.detail': 'Detail',
+      'trace.detailInfo': 'Key info',
+      'trace.req': '▸ Full request body',
+      'trace.resp': '▸ Full response body',
+      'detail.dim': 'Dim',
+      'trace.showAll': 'Show all events',
+      'trace.showAllSess': 'Show all sessions ({n})',
+      'trace.collapseSess': 'Collapse',
+      'trace.eventsUnit': 'events',
+      'trace.rb': 'Rollback',
+      'trace.rbBadge': 'Rolled back',
+      'trace.rbConfirm': 'Rollback? This undoes everything that request changed (placements and growth),\nrestoring the state before: "{title}"',
+      'trace.rbDone': 'Rolled back',
+      'trace.rbFail': 'Rollback failed',
       'growth.modelSwitched': 'generation model → {model}',
     }
   };
@@ -661,7 +768,8 @@
   const $ = sel => document.querySelector(sel);
   const state = { tid: null, mode: 'noul',
     expanded: new Set(), containers: {}, wraps: {}, selectedRow: null,
-    gate: 0.7, choiceGate: 0.6, tinfo: null, growthEnabled: false,
+    addGate: 0.5, questGate: 0.3, choiceGate: 0.6, tinfo: null, growthEnabled: false,
+    trace: { enabled: false, since: 0, timer: null },
     allModels: [], modelBarInit: false };
 
   const T0 = () => '/api/t/' + state.tid;
@@ -719,6 +827,8 @@
     $('#tblMode').style.display = 'none';
     $('#tblEdit').style.display = 'none';
     $('#gateLb').style.display = 'none';
+    $('#traceToggle').style.display = 'none';
+    stopTracePoll();   // 回表单页：动作流轮询停（事件按表过滤，无当前表即无流可拉）
     $('#stats').textContent = '';
     $('#startView').style.display = '';
     $('#treePanel').style.display = 'none';
@@ -847,7 +957,8 @@
     try {
       const d = await api(T0());   // 表元信息 + metaMap
       state.mode = d.meta.mode;
-      state.gate = d.meta.noulGate;
+      state.addGate = d.meta.addGate;
+      state.questGate = d.meta.questGate;
       state.choiceGate = d.meta.choiceGate;
       $('#tblName').textContent = d.name;
       $('#tblName').title = d.note || d.name;
@@ -878,6 +989,12 @@
       showTab('detail');
       if (!extendTimer) pollExtend();   // 进表即接上延伸进度（水位自动触发的任务也能看到进度条）
       if (!maintTimer) pollMaint();     // 进表即接上维护状态轮询（running 1s / idle 8s；启动补跑的任务也能看到）
+      // 动作流：切表清空会话列表重拉（会话列表是全局的，跨表可见；追踪开关保持原状态）
+      $('#traceList').innerHTML = '';
+      traceCache = [];
+      traceShowAll = false;
+      $('#traceEmpty').style.display = '';
+      loadTrace();
     } catch (e) {
       toast(T('toast.openFail') + ': ' + e, true);
       location.hash = '#/';
@@ -893,38 +1010,50 @@
     });
   };
 
-  function gateVal() { return state.mode === 'choice' ? state.choiceGate : state.gate; }
-
   function applyGateLabel() {
     const choice = state.mode === 'choice';
-    $('#gateLbTxt').textContent = T(choice ? 'gate.choice' : 'gate.noul');
-    $('#gateLb').title = T(choice ? 'gate.choiceTitle' : 'gate.noulTitle');
-    const g = $('#gate');
-    if (document.activeElement !== g) g.value = gateVal();
+    $('#gateLbTxt').textContent = T(choice ? 'gate.choice' : 'gate.add');
+    $('#gateLb').title = choice ? T('gate.choiceTitle')
+        : T('gate.addTitle') + ' · ' + T('gate.questTitle');
+    const ag = $('#addGate'), qg = $('#questGate'), cg = $('#choiceGate');
+    ag.style.display = choice ? 'none' : '';
+    qg.style.display = choice ? 'none' : '';
+    cg.style.display = choice ? '' : 'none';
+    if (choice) {
+      if (document.activeElement !== cg) cg.value = state.choiceGate;
+    } else {
+      if (document.activeElement !== ag) ag.value = state.addGate;
+      if (document.activeElement !== qg) qg.value = state.questGate;
+    }
   }
 
   function renderStats(m) {
     $('#stats').textContent = Tf('hdr.docs', { n: m.docCount });
-    if (state.mode === 'choice' && m.choiceGate != null) state.choiceGate = m.choiceGate;
-    if (m.noulGate != null) state.gate = m.noulGate;
-    applyGateLabel();   // 门控标签与输入框随 meta 同步（正在编辑时不覆盖）
+    if (m.choiceGate != null) state.choiceGate = m.choiceGate;
+    if (m.addGate != null) state.addGate = m.addGate;
+    if (m.questGate != null) state.questGate = m.questGate;
+    applyGateLabel();   // 双门控标签与输入框随 meta 同步（正在编辑时不覆盖）
   }
 
-  $('#gate').addEventListener('change', async () => {
-    const v = parseFloat($('#gate').value);
-    const choice = state.mode === 'choice';
-    const label = T(choice ? 'gate.choice' : 'gate.noul');
-    if (!(v > 0 && v <= 1)) { toast(Tf('toast.gateRange', { label }), true); $('#gate').value = gateVal(); return; }
+  async function sendGate(input, field, labelKey) {
+    const v = parseFloat(input.value);
+    const label = T(labelKey);
+    if (!(v > 0 && v <= 1)) { toast(Tf('toast.gateRange', { label }), true); applyGateLabel(); return; }
     try {
-      const out = await apiSend(T0() + '/gate', 'POST', choice ? { choiceGate: v } : { noulGate: v });
-      if (choice) state.choiceGate = out.choiceGate; else state.gate = out.noulGate;
-      $('#gate').value = gateVal();
-      toast(Tf('toast.gateOk', { label, value: gateVal() }));
+      const out = await apiSend(T0() + '/gate', 'POST', { [field]: v });
+      if (field === 'choiceGate') state.choiceGate = out.choiceGate;
+      else if (field === 'addGate') state.addGate = out.addGate;
+      else state.questGate = out.questGate;
+      applyGateLabel();
+      toast(Tf('toast.gateOk', { label, value: v }));
     } catch (e) {
       toast(T('toast.gateFail') + ': ' + e, true);
-      $('#gate').value = gateVal();
+      applyGateLabel();
     }
-  });
+  }
+  $('#addGate').addEventListener('change', () => sendGate($('#addGate'), 'addGate', 'gate.add'));
+  $('#questGate').addEventListener('change', () => sendGate($('#questGate'), 'questGate', 'gate.quest'));
+  $('#choiceGate').addEventListener('change', () => sendGate($('#choiceGate'), 'choiceGate', 'gate.choice'));
 
   // ── 逐层展开树 ─────────────────────────────────────────────────
 
@@ -968,11 +1097,11 @@
       badge.title = T('badge.docCount');
       row.appendChild(badge);
     }
-    if (node.yes) {
+    if (node.add) {
       const crit = document.createElement('div');
       crit.className = 'crit';
-      crit.textContent = (state.mode === 'choice' ? '» ' : '✓ ') + node.yes;
-      if (node.no) crit.title = '✗ ' + node.no;
+      crit.textContent = (state.mode === 'choice' ? '» ' : '✓ ') + node.add
+          + (node.dim > 0 ? ' · 维度 ' + node.dim : '');
       row.appendChild(crit);
     }
 
@@ -1251,19 +1380,16 @@
       '  <div class="dlg-note">' + esc(scope + (choice ? '' : T('dlg.critHint'))) + '</div>' +
       '  <label>' + esc(T(choice ? 'dlg.nameLabelChoice' : 'dlg.nameLabelNoul')) + '</label>' +
       '  <input id="jn-name" placeholder="' + esc(T(choice ? 'dlg.namePhChoice' : 'dlg.namePhNoul')) + '">' +
-      '  <label>' + esc(T(choice ? 'dlg.yesLabelChoice' : 'dlg.yesLabelNoul')) + '</label>' +
-      '  <input id="jn-yes" placeholder="' + esc(T(choice ? 'dlg.yesPhChoice' : 'dlg.yesPhNoul')) + '">' +
-      (choice ? '' :
-      '  <label>' + esc(T('dlg.noLabel')) + '</label>' +
-      '  <input id="jn-no" placeholder="">') +
+      '  <label>' + esc(T(choice ? 'dlg.addLabelChoice' : 'dlg.addLabelNoul')) + '</label>' +
+      '  <input id="jn-add" placeholder="' + esc(T(choice ? 'dlg.addPhChoice' : 'dlg.addPhNoul')) + '">' +
       '  <div class="actions"><button class="btn" id="jn-cancel">' + esc(T('dlg.cancel')) + '</button>' +
       '  <button class="btn primary" id="jn-ok">' + esc(T('dlg.create')) + '</button></div>' +
       '</div>');
     ov.querySelector('#jn-cancel').onclick = () => ov.remove();
     const val = id => ov.querySelector('#' + id).value.trim();
     ov.querySelector('#jn-ok').onclick = async () => {
-      const body = { parent: parentNode.name, name: val('jn-name'), yes: choice ? (val('jn-yes') || '') : val('jn-yes'), no: choice ? '' : (val('jn-no') || '') };
-      if (!body.name || (!choice && !body.yes)) { toast(T(choice ? 'dlg.errChoice' : 'dlg.errNoul'), true); return; }
+      const body = { parent: parentNode.name, name: val('jn-name'), add: val('jn-add') };
+      if (!body.name || (!choice && !body.add)) { toast(T(choice ? 'dlg.errChoice' : 'dlg.errNoul'), true); return; }
       ov.querySelector('#jn-ok').disabled = true;
       try {
         const out = await apiSend(T0() + '/node', 'POST', body);
@@ -1298,18 +1424,15 @@
       '  <div class="dlg-note">' + esc(T('dlg.editNote')) + '</div>' +
       '  <label>' + esc(T(choice ? 'dlg.edNameChoice' : 'dlg.edNameNoul')) + '</label>' +
       '  <input id="ed-name" value="' + esc(node.name) + '">' +
-      '  <label>' + esc(T(choice ? 'dlg.edYesChoice' : 'dlg.edYesNoul')) + '</label>' +
-      '  <input id="ed-yes" value="' + esc(node.yes || '') + '">' +
-      (choice ? '' :
-      '  <label>' + esc(T('dlg.noLabel')) + '</label>' +
-      '  <input id="ed-no" value="' + esc(node.no || '') + '">') +
+      '  <label>' + esc(T(choice ? 'dlg.edAddChoice' : 'dlg.edAddNoul')) + '</label>' +
+      '  <input id="ed-add" value="' + esc(node.add || '') + '">' +
       '  <div class="actions"><button class="btn" id="ed-cancel">' + esc(T('dlg.cancel')) + '</button>' +
       '  <button class="btn primary" id="ed-ok">' + esc(T('dlg.save')) + '</button></div>' +
       '</div>');
     ov.querySelector('#ed-cancel').onclick = () => ov.remove();
     const val = id => ov.querySelector('#' + id).value.trim();
     ov.querySelector('#ed-ok').onclick = async () => {
-      const body = { name: node.name, newName: val('ed-name'), yes: choice ? (val('ed-yes') || '') : val('ed-yes'), no: choice ? null : (val('ed-no') || null) };
+      const body = { name: node.name, newName: val('ed-name'), add: choice ? (val('ed-add') || '') : (val('ed-add') || null) };
       if (!body.newName) { toast(T('dlg.errNameEmpty'), true); return; }
       ov.querySelector('#ed-ok').disabled = true;
       try {
@@ -1400,12 +1523,16 @@
       (info.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.otherChoice' : 'tag.otherNoul')) + '</span>' : '') +
       '<span class="d-count">' + esc(Tf(isNode ? 'detail.subtreeDocs' : 'detail.leafDocs', { n: isNode ? info.docTotal : info.docs.length })) + '</span></div>' +
       '<div class="crumbs">' + crumbs + '</div>';
-    if (info.yes || info.no) {
-      html += '<div class="d-crit"><div>' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(info.yes) + '</div>' +
-              (state.mode === 'choice' ? '' : '<div>✗ ' + esc(info.no || '—') + '</div>') + '</div>';
+    if (info.add) {
+      html += '<div class="d-crit"><div>' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(info.add) + '</div></div>';
     } else if (info.other) {
       html += '<div class="d-crit">' + esc(Tf(state.mode === 'choice'
           ? 'detail.otherChoice' : 'detail.otherNoul', { gate: state.choiceGate })) + '</div>';
+    }
+    if (info.dim) {
+      html += '<div class="d-dim"><span class="dim-tag">' + esc(T('detail.dim')) + '</span>'
+        + '<span class="dim-val">' + esc(info.dim) + ' / 5</span>'
+        + '<span class="dim-bar"><span class="dim-fill" style="width:' + Math.min(100, info.dim / 5 * 100) + '%"></span></span></div>';
     }
     if (isNode) {
       html += '<div class="d-sub">' + esc(Tf('detail.children', { n: (info.children || []).length })) + '</div>';
@@ -1415,7 +1542,8 @@
             '<span class="name"' + (c.leaf ? ' style="color:#f2d38b"' : '') + '>' + esc(c.name) + '</span>' +
             (c.other ? '<span class="tag">' + esc(T(state.mode === 'choice' ? 'tag.otherChoice' : 'tag.otherNoul')) + '</span>' : '') +
             (c.leaf ? '<span class="badge' + (c.docCount ? '' : ' zero') + '">' + c.docCount + '</span>' : '') +
-            (c.yes ? '<div class="crit">' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(c.yes) + '</div>' : '') +
+            (c.dim ? '<span class="dim-mini">' + esc(T('detail.dim')) + ' ' + esc(c.dim) + '</span>' : '') +
+            (c.yes || c.add ? '<div class="crit">' + (state.mode === 'choice' ? '» ' : '✓ ') + esc(c.yes || c.add) + '</div>' : '') +
             '</div>';
       }
       html += '<div class="d-sub" id="nd-head">' + esc(T('detail.subContent')) + '</div><div id="nd-list"></div>';
@@ -1516,6 +1644,7 @@
     }
     $('#tab-detail').style.display = name === 'detail' ? '' : 'none';
     $('#tab-quest').style.display = name === 'quest' ? '' : 'none';
+    $('#tab-trace').style.display = name === 'trace' ? '' : 'none';
   }
   for (const b of document.querySelectorAll('.tabs > .tab')) {
     b.onclick = () => showTab(b.dataset.tab);
@@ -1661,6 +1790,226 @@
     if (d.source === 'fallback') toast(T('model.fallback'));
   }
 
+  // ── 动作追踪（🔎 开关 + 动作流页签轮询；全局内存态，重启回关）─────────
+
+  const TRACE_ICONS = {
+    'llm.decision': '⚖️', 'llm.docfilter': '🧹', 'llm.gen': '✍️',
+    'act.add': '📥', 'act.quest': '🔍', 'act.rejudge': '🧪',
+    'act.dim-check': '📏', 'act.grow-h': '🌿', 'act.grow-v': '🌲',
+    'act.rollback': '↩️', 'act.lift': '⬆️', 'act.sink': '⬇️'
+  };
+
+  function paintTraceToggle() {
+    const tg = $('#traceToggle');
+    tg.classList.toggle('growth-on', state.trace.enabled);
+    tg.title = T(state.trace.enabled ? 'trace.onTitle' : 'trace.offTitle');
+  }
+
+  async function loadTrace() {
+    $('#traceToggle').style.display = '';
+    paintTraceToggle();
+    try {
+      const d = await api('/api/trace');
+      state.trace.enabled = !!d.enabled;
+      paintTraceToggle();
+      if (state.trace.enabled) startTracePoll();
+    } catch (e) { /* 状态拿不到不影响主链路 */ }
+  }
+
+  $('#traceToggle').onclick = async () => {
+    try {
+      const out = await apiSend('/api/trace', 'POST', { enabled: !state.trace.enabled });
+      state.trace.enabled = !!out.enabled;
+      paintTraceToggle();
+      toast(T(out.enabled ? 'trace.switchedOn' : 'trace.switchedOff'));
+      if (state.trace.enabled) {
+        traceCache = [];   // 开启即清空缓存，从当前轮询起拉（不回灌历史）
+        traceShowAll = false;
+        $('#traceList').innerHTML = '';
+        $('#traceEmpty').style.display = '';
+        showTab('trace');
+        startTracePoll();
+      } else {
+        stopTracePoll();
+      }
+    } catch (e) {
+      toast(T('trace.switchFail') + ': ' + e, true);
+    }
+  };
+
+  function startTracePoll() {
+    if (state.trace.timer) return;
+    tracePoll();
+  }
+  function stopTracePoll() {
+    if (state.trace.timer) { clearTimeout(state.trace.timer); state.trace.timer = null; }
+  }
+
+  /** 轮询动作流（2s）：拉全局会话列表（按请求分组），全量缓存后重绘（默认只显最近 10 条会话）。 */
+  let traceCache = [];
+  let traceShowAll = false;
+  async function tracePoll() {
+    if (!state.trace.enabled || !state.tid) { state.trace.timer = null; return; }
+    try {
+      const r = await api('/api/trace');
+      if (r.enabled && !state.trace.enabled) { state.trace.enabled = true; paintTraceToggle(); }
+      if (!r.enabled && state.trace.enabled) { state.trace.enabled = false; paintTraceToggle(); state.trace.timer = null; return; }
+      renderTraceSessions(r.sessions || []);
+    } catch (e) { /* 轮询失败静默下轮再试 */ }
+    state.trace.timer = setTimeout(tracePoll, 2000);
+  }
+
+  /** 动作流页签默认展示的会话条数：超出折叠，点「全部会话」展开、再点收起。 */
+  const TRACE_SESS_LIMIT = 10;
+
+  /** 缓存并重绘会话列表：按开始时间降序（新→旧，最新在最上）；默认只显最新 10 条，展开可看全部。 */
+  function renderTraceSessions(sessions) {
+    traceCache = sessions.slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    paintTraceList();
+  }
+
+  /** 重绘会话列表：降序前 10 条（不足 10 条全显、0 条空态），顶部「全部会话/收起」切换；
+   *  回退按钮只出现在最新一条事件上；用户在顶部时新会话进入后保持看最新，上翻互不打扰。 */
+  function paintTraceList() {
+    const list = $('#traceList');
+    const keep = list.scrollTop < 40;   // 降序新会话插入顶部，用户停在顶部时跟随看最新
+    const prevTop = list.scrollTop;
+    list.innerHTML = '';
+    if (traceCache.length > TRACE_SESS_LIMIT) {
+      const more = document.createElement('div');
+      more.className = 'trace-more';
+      more.textContent = traceShowAll ? T('trace.collapseSess') : Tf('trace.showAllSess', { n: traceCache.length });
+      more.onclick = () => { traceShowAll = !traceShowAll; paintTraceList(); };
+      list.appendChild(more);
+    }
+    const shown = traceShowAll ? traceCache : traceCache.slice(0, TRACE_SESS_LIMIT);   // 降序前 10 = 最新 10 条
+    // 回退按钮只出现在最新一条事件上（变更类且未回退）——后端只认栈顶快照，其余一律不显
+    const CHG = { add: 1, addBatch: 1, extend: 1 };
+    const latest = traceCache[0];
+    const canRb = latest && CHG[latest.action] && !latest.rolledBack;
+    for (const s of shown) {
+      $('#traceEmpty').style.display = 'none';
+      const row = document.createElement('div');
+      row.className = 'trace-sess';
+      const d = new Date(s.ts);
+      const today = new Date().toDateString() === d.toDateString();
+      const ts = (today ? '' : (d.getMonth() + 1) + '-' + d.getDate() + ' ') + d.toTimeString().slice(0, 8);
+      row.innerHTML = '<span class="tr-ic">🗂</span>'
+        + '<span class="tr-act">' + esc(s.action || '?') + '</span>'
+        + '<span class="tr-ts">' + esc(ts) + '</span>'
+        + '<span class="tr-title">' + esc(s.title || '') + '</span>'
+        + '<span class="tr-cnt">' + esc(s.events || 0) + ' ' + esc(T('trace.eventsUnit')) + '</span>'
+        + (s.tokens ? '<span class="tr-tok">Σ' + esc(s.tokens) + ' tok</span>' : '')
+        + (s.rolledBack ? '<span class="rb-badge">' + esc(T('trace.rbBadge')) + '</span>' : '')
+        + (canRb && s === latest ? '<button class="btn tr-rb">⏪ ' + esc(T('trace.rb')) + '</button>' : '');
+      if (canRb && s === latest) row.querySelector('.tr-rb').onclick = (ev) => { ev.stopPropagation(); rollbackSession(s); };
+      row.onclick = () => openTraceSession(s.file || s.seq);
+      list.appendChild(row);
+    }
+    if (!traceCache.length) $('#traceEmpty').style.display = '';
+    if (keep) list.scrollTop = 0; else list.scrollTop = prevTop;   // 顶部跟随：新会话在最上；上翻时不打扰位置
+  }
+
+  /**
+   * 回退最新一次变更：确认后 POST /rollback {seq}（仅栈顶快照可回退，后端校验）——
+   * 恢复该会话开始前的全表状态（落位/生长/存量迁移一并撤销），成功后重进表刷新树。
+   */
+  async function rollbackSession(s) {
+    if (!window.confirm(Tf('trace.rbConfirm', { title: s.title || s.action }))) return;
+    try {
+      const out = await apiSend(T0() + '/api/t/' + encodeURIComponent(state.tid) + '/rollback', 'POST', { seq: s.seq });
+      toast(T('trace.rbDone') + ' · ' + (out.docs ?? '') + ' docs');
+      s.rolledBack = true;   // 本地即标，不等下轮轮询
+      paintTraceList();
+      await openTable(state.tid);   // 树结构与落位都变了，整体重进
+    } catch (e) {
+      toast(T('trace.rbFail') + ': ' + e, true);
+    }
+  }
+
+  /** 单开一个会话：拉该请求的完整动作流，弹层内事件按序渲染（可再点详情看请求/响应体）。 */
+  async function openTraceSession(file) {
+    try {
+      const s = await api('/api/trace?file=' + encodeURIComponent(file));
+      const icon = { add: '📥', addBatch: '📥', quest: '🔍', extend: '🌲' }[s.action] || '🗂';
+      let html = '<div class="dialog trace-dlg"><h3>' + icon + ' ' + esc(s.action || '') + ' · ' + esc(s.title || '') + '</h3>'
+        + '<div class="tr-meta">' + esc(new Date(s.ts).toLocaleString())
+        + (s.tableId ? ' · ' + esc(s.tableId) : '')
+        + (s.tokens ? ' · Σ ' + esc(s.tokens) + ' tok（in ' + esc(s.inTok || 0) + ' / out ' + esc(s.outTok || 0) + '）' : '')
+        + (s.file ? ' · ' + esc(T('trace.sessFile')) + ': ' + esc(s.file) : '') + '</div>';
+      html += '<h4>' + esc(T('trace.sessFlow')) + '（' + ((s.events || []).length) + '）</h4>';
+      html += '<div id="sessFlow"></div>';
+      openOverlay(html + '</div>');
+      renderTraceEvents($('#sessFlow'), s.events || []);
+    } catch (e) {
+      toast(T('trace.switchFail') + ': ' + e, true);
+    }
+  }
+
+  /** 动作流弹层默认展示的事件条数：超出部分折叠，点「全部事件」展开。 */
+  const TRACE_PAGE_LIMIT = 10;
+
+  /** 渲染事件行到指定容器：图标 + 时间 + 标题 + 耗时 + 详情按钮；超 TRACE_PAGE_LIMIT 默认只显前 10 条，可展开全部。 */
+  function renderTraceEvents(container, events) {
+    const shown = events.length > TRACE_PAGE_LIMIT ? events.slice(0, TRACE_PAGE_LIMIT) : events;
+    for (const ev of shown) appendTraceRow(container, ev);
+    if (events.length > TRACE_PAGE_LIMIT) {
+      const more = document.createElement('div');
+      more.className = 'trace-more';
+      more.textContent = T('trace.showAll');
+      more.onclick = () => {
+        more.remove();
+        for (const ev of events.slice(TRACE_PAGE_LIMIT)) appendTraceRow(container, ev);
+      };
+      container.appendChild(more);
+    }
+  }
+
+  /** 单个事件行（前 10 条与展开复用）。 */
+  function appendTraceRow(list, ev) {
+      const row = document.createElement('div');
+      row.className = 'trace-row';
+      const icon = TRACE_ICONS[ev.type] || '•';
+      const ts = new Date(ev.ts).toTimeString().slice(0, 8);
+      row.innerHTML = '<span class="tr-ic">' + icon + '</span>'
+        + '<span class="tr-ts">' + esc(ts) + '</span>'
+        + '<span class="tr-title">' + esc(ev.title) + '</span>'
+        + '<span class="tr-ms">' + (ev.ms ? esc(ev.ms) + 'ms' : '') + '</span>'
+        + ((ev.inTok || ev.outTok) ? '<span class="tr-tok">' + esc((ev.inTok || 0) + (ev.outTok || 0)) + ' tok</span>' : '')
+        + '<button class="btn tr-detail">' + esc(T('trace.detail')) + '</button>';
+      row.querySelector('.tr-detail').onclick = () => openTraceDetail(ev);
+      list.appendChild(row);
+  }
+
+  /** 详情弹层：类型元信息 + 关键信息 JSON + 可折叠的完整请求/响应体（尝试美化）。 */
+  function openTraceDetail(ev) {
+    const icon = TRACE_ICONS[ev.type] || '•';
+    let html = '<div class="dialog trace-dlg"><h3>' + icon + ' ' + esc(ev.title) + '</h3>'
+      + '<div class="tr-meta">' + esc(ev.type) + ' · seq ' + esc(ev.seq) + ' · '
+      + esc(new Date(ev.ts).toLocaleTimeString())
+      + (ev.ms ? ' · ' + esc(ev.ms) + 'ms' : '')
+      + (ev.inTok ? ' · in ' + esc(ev.inTok) + ' tok' : '')
+      + (ev.outTok ? ' · out ' + esc(ev.outTok) + ' tok' : '') + '</div>';
+    if (ev.detail && Object.keys(ev.detail).length) {
+      html += '<h4>' + esc(T('trace.detailInfo')) + '</h4>'
+        + '<pre class="tr-json">' + esc(JSON.stringify(ev.detail, null, 2)) + '</pre>';
+    }
+    if (ev.reqBody) {
+      html += '<details open><summary>' + esc(T('trace.req')) + '</summary>'
+        + '<pre class="tr-json">' + esc(prettyJson(ev.reqBody)) + '</pre></details>';
+    }
+    if (ev.respBody) {
+      html += '<details><summary>' + esc(T('trace.resp')) + '</summary>'
+        + '<pre class="tr-json">' + esc(prettyJson(ev.respBody)) + '</pre></details>';
+    }
+    openOverlay(html + '</div>');
+  }
+
+  /** 响应/请求体 JSON 美化（非 JSON 原样展示）。 */
+  function prettyJson(s) {
+    try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; }
+  }
+
   async function initGrowthBar() {
     $('#growthToggle').onclick = async () => {
       try {
@@ -1769,7 +2118,12 @@
   // 确认带 confirm=true 重发执行过滤；取消直接渲染未过滤结果（响应里 ranked 本就保持全量）
   async function runQuest(text) {
     let d = await apiSend(T0() + '/quest', 'POST', { query: text });
-    if (d.docFilter && d.docFilter.confirmRequired) {
+    if (d.catScope && d.docFilter && d.docFilter.confirmRequired) {
+      // 类目命中子树超预算（复用 confirmRequired 标志）：确认后全量返回（无 doc 过滤）
+      if (confirm(Tf('quest.catConfirm', { n: d.catScopeDocs || 0, node: d.catScope }))) {
+        d = await apiSend(T0() + '/quest', 'POST', { query: text, confirm: true });
+      }
+    } else if (d.docFilter && d.docFilter.confirmRequired) {
       if (confirm(Tf('quest.dfConfirm', { n: d.docFilter.total || 0 }))) {
         d = await apiSend(T0() + '/quest', 'POST', { query: text, confirm: true });
       }
@@ -1921,7 +2275,7 @@
       for (const b of (gs.branches || [])) {
         html += '<div class="grow-branch"><span class="chip">' + esc(b.name) + '</span>' +
             '<span class="grow-p">P ' + (b.prob != null ? (+b.prob).toFixed(2) : '—') + '</span>' +
-            '<div class="grow-yes">' + esc(b.yes || '') + '</div></div>';
+            '<div class="grow-yes">' + esc(b.add || '') + '</div></div>';
       }
       return html + '</div>';
     }
@@ -1938,7 +2292,8 @@
     html += d.matchedLeaves.length
         ? '<div>' + d.matchedLeaves.map(l => '<span class="chip">' + esc(l) + '</span>').join('') + '</div>'
         : '<div class="q-none">' + esc(Tf(state.mode === 'choice'
-            ? 'quest.noHitChoice' : 'quest.noHitNoul', { gate: gateVal() })) + '</div>';
+            ? 'quest.noHitChoice' : 'quest.noHitNoul',
+            { gate: state.mode === 'choice' ? state.choiceGate : state.questGate })) + '</div>';
     html += '<div class="q-sub">' + esc(Tf('quest.rank', { n: d.ranked.length })) +
         '<span class="dim">' + esc(T(state.mode === 'choice' ? 'quest.scoreChoice' : 'quest.scoreNoul')) + '</span></div>';
     html += d.ranked.length
@@ -1950,6 +2305,9 @@
             (r.docP != null && r.docP < 1 ? ' · ' + esc(Tf('quest.docP', { p: r.docP.toFixed(2) })) : '') + '</div></div></div>').join('')
         : '<div class="q-none">' + esc(T('quest.noDocs')) + '</div>';
     const df = d.docFilter;
+    if (d.catScope) {
+      html += '<div class="q-sub"><span class="dim">📂 ' + esc(Tf('quest.catScope', { node: d.catScope, n: d.catScopeDocs || 0 })) + '</span></div>';
+    }
     if (df && df.confirmRequired) {
       html += '<div class="q-sub"><span class="dim">' + esc(Tf('quest.dfUnfiltered', { n: df.total || 0 })) + '</span></div>';
     } else if (df && df.calls > 0) {

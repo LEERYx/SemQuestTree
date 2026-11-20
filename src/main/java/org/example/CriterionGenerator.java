@@ -28,7 +28,7 @@ public interface CriterionGenerator {
 
     /** 一次生成的产物与账单：branches 为空 = 生成方认为无值得生长的区分。 */
     final class GrowthResult {
-        public final List<String[]> branches = new ArrayList<String[]>();   // 每项 {name, yes}
+        public final List<String[]> branches = new ArrayList<String[]>();   // 每项 {name, add 属性解释}
         public int inputTokens;
         public int outputTokens;
         public long latencyMs;
@@ -37,18 +37,21 @@ public interface CriterionGenerator {
     /**
      * 为层 parentName 提出至多 maxNew 个新分支。
      *
-     * @param siblings 现有兄弟分支（每项 {name, yes}，判据空回名字）——生成须与其不重叠
-     * @param samples  落兜底的正文（同步生长时就是触发本条内容）
+     * @param parentAdd  父节点属性解释（子类的公共上限；ROOT 层为空串）——生成须在其之内再收一层
+     * @param siblings   现有兄弟分支（每项 {name, add 属性解释}，判据空回名字）——生成须与其不重叠
+     * @param nearMisses 高分落选信号：本层未过落位门控但 P 值相对高的分支判据行——生成须避开这些相近含义
+     * @param samples    落兜底的正文（同步生长时就是触发本条内容）
      */
-    GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew)
+    GrowthResult generate(String parentName, String parentAdd,
+                          List<String[]> siblings, List<String> nearMisses, List<String> samples, int maxNew)
             throws IOException;
 
     /**
      * 延伸生成：为拥挤节点 parentName 提出 1 个更细的子分支（串行闭环每轮一次，siblings 恒为最新状态）。
-     * parentYes=父节点判据（子类的公共上限，提示模型粒度要再收一层）；totalDocs=待整理存量条数；
-     * samples=存量样本（内容概述，模型从中挑最大且内部相似的一簇）。
+     * parentAdd=父节点属性解释（子类的公共上限，提示模型粒度要再收一层）；
+     * totalDocs=待整理存量条数；samples=存量样本（内容概述，模型从中挑最大且内部相似的一簇）。
      */
-    GrowthResult generateExtend(String parentName, String parentYes, int totalDocs,
+    GrowthResult generateExtend(String parentName, String parentAdd, int totalDocs,
                                 List<String[]> siblings, List<String> samples) throws IOException;
 
     /** openrouter chat completions 通用生成（与决策端点同平台不同端点，同一把 key）。 */
@@ -61,9 +64,11 @@ public interface CriterionGenerator {
         private final String extendTemplate;   // growth.extend.prompt 提示词文件内容（构造时读取）
         private final int maxTokens;           // growth.maxTokens（<=0 = 不发 max_tokens，沿用模型默认）
         private final String thinking;         // growth.thinking（none/low/medium/high；空白 = 不发 reasoning）
+        private final String traceTag;         // 动作流归属表 id（viz 🔎 追踪按表过滤）
 
         public OpenRouterGenerator(String url, String model, String apiKey, int timeoutMs, String promptPath,
-                                   int maxTokens, String thinking, String extendPath) {
+                                   int maxTokens, String thinking, String extendPath,
+                                   String traceTag) {
             this.url = url;
             this.model = model;
             this.apiKey = apiKey;
@@ -73,28 +78,33 @@ public interface CriterionGenerator {
             this.extendTemplate = PromptLoader.read("growth.extend.prompt", extendPath);
             this.maxTokens = maxTokens;
             this.thinking = thinking != null && !thinking.trim().isEmpty() ? thinking.trim() : null;
+            this.traceTag = traceTag;
         }
 
-        public GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew)
-                throws IOException {
+        public GrowthResult generate(String parentName, String parentAdd,
+                                     List<String[]> siblings, List<String> nearMisses,
+                                     List<String> samples, int maxNew) throws IOException {
             String prompt = promptTemplate
                     .replace("{parent}", parentName)
+                    .replace("{parentAdd}", parentAdd == null || parentAdd.trim().isEmpty()
+                            ? "（根层，无父类约束——提出顶层大类）" : parentAdd)
                     .replace("{siblings}", siblingsBlock(siblings))
+                    .replace("{nearMisses}", nearMissesBlock(nearMisses))
                     .replace("{count}", String.valueOf(samples.size()))
                     .replace("{samples}", samplesBlock(samples))
                     .replace("{maxNew}", String.valueOf(maxNew));
-            return callModel(prompt);
+            return callModel("grow", parentName, prompt);
         }
 
-        public GrowthResult generateExtend(String parentName, String parentYes, int totalDocs,
+        public GrowthResult generateExtend(String parentName, String parentAdd, int totalDocs,
                                            List<String[]> siblings, List<String> samples) throws IOException {
             String prompt = extendTemplate
                     .replace("{parent}", parentName)
-                    .replace("{parentYes}", parentYes == null ? "" : parentYes)
+                    .replace("{parentAdd}", parentAdd == null ? "" : parentAdd)
                     .replace("{count}", String.valueOf(totalDocs))
                     .replace("{siblings}", siblingsBlock(siblings))
                     .replace("{samples}", samplesBlock(samples));
-            return callModel(prompt);
+            return callModel("extend", parentName, prompt);
         }
 
         /** 现有子分支清单行（两种生成的 {siblings} 占位符共用）。 */
@@ -110,6 +120,18 @@ public interface CriterionGenerator {
             return sib.toString();
         }
 
+        /** 高分落选信号块（{nearMisses} 占位符）：本层 P 值不低却未过门的相近分支——生成须避开这些含义。 */
+        private static String nearMissesBlock(List<String> nearMisses) {
+            if (nearMisses == null || nearMisses.isEmpty()) {
+                return "（无）\n";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (String nm : nearMisses) {
+                sb.append("- ").append(nm).append('\n');
+            }
+            return sb.toString();
+        }
+
         /** 样本编号行（两种生成的 {samples} 占位符共用）。 */
         private static String samplesBlock(List<String> samples) {
             StringBuilder smp = new StringBuilder();
@@ -119,8 +141,11 @@ public interface CriterionGenerator {
             return smp.toString();
         }
 
-        /** 共用请求与解析：发 chat completions、记 token 账单、剥栅栏、解析 branches（空/结构不符=无值得生长的区分）。 */
-        private GrowthResult callModel(String prompt) throws IOException {
+        /**
+         * 共用请求与解析：发 chat completions、记 token 账单、剥栅栏、解析 branches（空/结构不符=无值得生长的区分）。
+         * 动作流埋点（llm.gen）：完整请求/响应体取自 Http.LAST_POST 线程捕获；成功与失败都记。
+         */
+        private GrowthResult callModel(String kind, String parentName, String prompt) throws IOException {
             Map<String, Object> m0 = new java.util.LinkedHashMap<String, Object>();
             m0.put("role", "user");
             m0.put("content", prompt);
@@ -139,54 +164,88 @@ public interface CriterionGenerator {
             }
 
             long start = System.nanoTime();
-            String resp = Http.post(url, apiKey, Json.write(body), timeoutMs);
-            GrowthResult out = new GrowthResult();
-            out.latencyMs = (System.nanoTime() - start) / 1_000_000L;
+            try {
+                String resp = Http.post(url, apiKey, Json.write(body), timeoutMs);
+                GrowthResult out = new GrowthResult();
+                out.latencyMs = (System.nanoTime() - start) / 1_000_000L;
+                Map<String, Object> ro = Json.parseObject(resp);
+                Object usage = ro.get("usage");
+                if (usage instanceof Map) {
+                    Object p = ((Map<?, ?>) usage).get("prompt_tokens");
+                    Object c = ((Map<?, ?>) usage).get("completion_tokens");
+                    if (p instanceof Number) out.inputTokens = ((Number) p).intValue();
+                    if (c instanceof Number) out.outputTokens = ((Number) c).intValue();
+                }
+                Object choices = ro.get("choices");
+                if (!(choices instanceof List) || ((List<?>) choices).isEmpty()) {
+                    throw new IllegalStateException("生成响应缺 choices: " + resp.substring(0, Math.min(200, resp.length())));
+                }
+                Object first = ((List<?>) choices).get(0);
+                String content = null;
+                String finish = null;
+                if (first instanceof Map) {
+                    Object fr = ((Map<?, ?>) first).get("finish_reason");
+                    if (fr instanceof String) finish = (String) fr;
+                    Object mo = ((Map<?, ?>) first).get("message");
+                    if (mo instanceof Map) {
+                        Object co = ((Map<?, ?>) mo).get("content");
+                        if (co instanceof String) content = (String) co;
+                    }
+                }
+                if (content == null || content.trim().isEmpty()) {
+                    throw new IllegalStateException("生成响应缺 message.content"
+                            + (finish != null ? "（finish_reason=" + finish + "）" : "")
+                            + ("length".equals(finish)
+                            ? "：疑被 growth.maxTokens 截断（只出了思维链没出正文），调大 growth.maxTokens 或收紧 growth.thinking" : ""));
+                }
+                content = stripFences(content.trim());
+                Map<String, Object> parsed = Json.parseObject(content);
+                Object arr = parsed.get("branches");
+                if (arr instanceof List) {
+                    for (Object o : (List<?>) arr) {
+                        if (!(o instanceof Map)) continue;
+                        Object n = ((Map<?, ?>) o).get("name");
+                        // add = 属性解释（生成提示词要求的新键）；兼容生成模型沿用旧键 yes 的情况
+                        Object y = ((Map<?, ?>) o).get("add");
+                        if (!(y instanceof String)) y = ((Map<?, ?>) o).get("yes");
+                        if (n instanceof String && !((String) n).trim().isEmpty()
+                                && y instanceof String && !((String) y).trim().isEmpty()) {
+                            out.branches.add(new String[]{((String) n).trim(), ((String) y).trim()});
+                        }
+                    }
+                }   // 空或结构不符：视为无值得生长的区分
 
-            Map<String, Object> ro = Json.parseObject(resp);
-            Object usage = ro.get("usage");
-            if (usage instanceof Map) {
-                Object p = ((Map<?, ?>) usage).get("prompt_tokens");
-                Object c = ((Map<?, ?>) usage).get("completion_tokens");
-                if (p instanceof Number) out.inputTokens = ((Number) p).intValue();
-                if (c instanceof Number) out.outputTokens = ((Number) c).intValue();
-            }
-            Object choices = ro.get("choices");
-            if (!(choices instanceof List) || ((List<?>) choices).isEmpty()) {
-                throw new IllegalStateException("生成响应缺 choices: " + resp.substring(0, Math.min(200, resp.length())));
-            }
-            Object first = ((List<?>) choices).get(0);
-            String content = null;
-            String finish = null;
-            if (first instanceof Map) {
-                Object fr = ((Map<?, ?>) first).get("finish_reason");
-                if (fr instanceof String) finish = (String) fr;
-                Object mo = ((Map<?, ?>) first).get("message");
-                if (mo instanceof Map) {
-                    Object co = ((Map<?, ?>) mo).get("content");
-                    if (co instanceof String) content = (String) co;
+                // 动作流：生成调用成功事件（判据生成 grow / 延伸生成 extend）
+                Map<String, Object> d = new java.util.LinkedHashMap<String, Object>();
+                d.put("kind", kind);
+                d.put("model", model);
+                d.put("parent", parentName);
+                List<Map<String, Object>> brs = new ArrayList<Map<String, Object>>();
+                for (String[] b : out.branches) {
+                    Map<String, Object> bm = new java.util.LinkedHashMap<String, Object>();
+                    bm.put("name", b[0]);
+                    bm.put("add", b[1]);
+                    brs.add(bm);
                 }
+                d.put("branches", brs);
+                String[] cap = Http.LAST_POST.get();
+                Trace.record(traceTag, "llm.gen", ("extend".equals(kind) ? "延伸生成" : "判据生成")
+                        + " @ " + parentName + "（" + out.branches.size() + " 候选）",
+                        d, cap == null ? null : cap[1], cap == null ? null : cap[2],
+                        out.inputTokens, out.outputTokens, out.latencyMs);
+                return out;
+            } catch (IOException e) {
+                Map<String, Object> d = new java.util.LinkedHashMap<String, Object>();
+                d.put("kind", kind);
+                d.put("model", model);
+                d.put("parent", parentName);
+                d.put("error", String.valueOf(e.getMessage()));
+                String[] cap = Http.LAST_POST.get();
+                Trace.record(traceTag, "llm.gen", ("extend".equals(kind) ? "延伸生成失败" : "判据生成失败")
+                        + " @ " + parentName, d, cap == null ? null : cap[1], cap == null ? null : cap[2],
+                        0, 0, (System.nanoTime() - start) / 1_000_000L);
+                throw e;
             }
-            if (content == null || content.trim().isEmpty()) {
-                throw new IllegalStateException("生成响应缺 message.content"
-                        + (finish != null ? "（finish_reason=" + finish + "）" : "")
-                        + ("length".equals(finish)
-                        ? "：疑被 growth.maxTokens 截断（只出了思维链没出正文），调大 growth.maxTokens 或收紧 growth.thinking" : ""));
-            }
-            content = stripFences(content.trim());
-            Map<String, Object> parsed = Json.parseObject(content);
-            Object arr = parsed.get("branches");
-            if (!(arr instanceof List)) return out;   // 空或结构不符：视为无值得生长的区分
-            for (Object o : (List<?>) arr) {
-                if (!(o instanceof Map)) continue;
-                Object n = ((Map<?, ?>) o).get("name");
-                Object y = ((Map<?, ?>) o).get("yes");
-                if (n instanceof String && !((String) n).trim().isEmpty()
-                        && y instanceof String && !((String) y).trim().isEmpty()) {
-                    out.branches.add(new String[]{((String) n).trim(), ((String) y).trim()});
-                }
-            }
-            return out;
         }
 
         /** 剥 markdown 代码栅栏（```json … ```）：部分模型爱包一层。 */
@@ -203,11 +262,13 @@ public interface CriterionGenerator {
 
     /** 零 token 确定性生成（mock 判定链路配套）：名字取触发样本尾三字，验收按子串匹配即可命中。 */
     final class MockGenerator implements CriterionGenerator {
-        public GrowthResult generate(String parentName, List<String[]> siblings, List<String> samples, int maxNew) {
+        public GrowthResult generate(String parentName, String parentAdd,
+                                     List<String[]> siblings, List<String> nearMisses,
+                                     List<String> samples, int maxNew) {
             return mockBranch(siblings, samples);
         }
 
-        public GrowthResult generateExtend(String parentName, String parentYes, int totalDocs,
+        public GrowthResult generateExtend(String parentName, String parentAdd, int totalDocs,
                                            List<String[]> siblings, List<String> samples) {
             return mockBranch(siblings, samples);
         }

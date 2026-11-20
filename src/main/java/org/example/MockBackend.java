@@ -34,7 +34,11 @@ public final class MockBackend implements DecisionBackend {
         long start = System.nanoTime();
         LinkedHashMap<String, Double> probs = new LinkedHashMap<String, Double>();
         for (Map.Entry<String, NoulSpec> e : questions.entrySet()) {
-            probs.put(e.getKey(), contains(content, e.getValue().instructions) ? HIT : MISS);
+            // score 题（维度打分）恒返 0=未评 → 调用方父未评降级放行，mock 生长链路畅通；
+            // noul 题：instructions 含判据全文即命中；存量验收请求无 state（content=null，内容已拼题）恒命中
+            probs.put(e.getKey(), e.getValue().scoreCriteria != null ? 0.0d
+                    : content == null ? HIT
+                    : contains(content, e.getValue().instructions) ? HIT : MISS);
         }
         return new NoulReply(probs, 0, 0, elapsedMs(start), 0.0);
     }

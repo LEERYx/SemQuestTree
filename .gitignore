@@ -47,3 +47,4 @@ tables/
 # 服务运行日志（System.out 裸输出重定向）
 server.log
 /.qoder/
+traces/

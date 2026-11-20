@@ -15,29 +15,44 @@ final class Http {
 
     static final Charset UTF8 = Charset.forName("UTF-8");
 
+    /**
+     * 追踪捕获（动作流 llm.* 事件的请求/响应体来源）：最近一次 POST 的 [url, 请求体, 响应体]。
+     * 线程本地——决策/生成调用在请求线程或延伸线程内完成，上层动作埋点在调用返回后立即取用；
+     * 追踪开关关闭时置 null（零记录开销）。失败调用的响应体为错误摘要（动作流可见失败原因）。
+     */
+    static final ThreadLocal<String[]> LAST_POST = new ThreadLocal<String[]>();
+
     /** POST JSON 并返回响应体；非 200 抛 IOException（带状态码与响应体，截断）。 */
     static String post(String url, String apiKey, String jsonBody, int timeoutMs) throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setRequestMethod("POST");
-        conn.setConnectTimeout(timeoutMs);
-        conn.setReadTimeout(timeoutMs);
-        conn.setDoOutput(true);
-        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
-        conn.setRequestProperty("Content-Type", "application/json");
-        OutputStream out = null;
+        String respCapture = null;
         try {
-            out = conn.getOutputStream();
-            out.write(jsonBody.getBytes(UTF8));
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            conn.setRequestProperty("Content-Type", "application/json");
+            OutputStream out = null;
+            try {
+                out = conn.getOutputStream();
+                out.write(jsonBody.getBytes(UTF8));
+            } finally {
+                if (out != null) out.close();
+            }
+            int code = conn.getResponseCode();
+            InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            String body = in == null ? "" : readAll(in);
+            if (code != 200) {
+                throw new IOException("HTTP " + code + ": " + abbrev(body));
+            }
+            respCapture = body;
+            return body;
         } finally {
-            if (out != null) out.close();
+            LAST_POST.set(Trace.isEnabled()
+                    ? new String[] { url, jsonBody, respCapture != null ? respCapture : "（调用失败，错误见事件标题/日志）" }
+                    : null);
         }
-        int code = conn.getResponseCode();
-        InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
-        String body = in == null ? "" : readAll(in);
-        if (code != 200) {
-            throw new IOException("HTTP " + code + ": " + abbrev(body));
-        }
-        return body;
     }
 
     /** GET 并返回响应体（模型列表等元数据）；非 200 抛 IOException。 */

@@ -75,16 +75,21 @@ public final class OpenRouterBackend implements DecisionBackend {
             throw new IOException("缺少 OpenRouter 凭据：请在 semquest.properties 配置 openrouter.apikey（或 export OPENROUTER_API_KEY=...）");
         }
         StringBuilder sb = new StringBuilder(512);
-        sb.append("{\"model\":\"").append(model).append("\",\"state\":")
-          .append(Json.write(state(content, rule)))
-          .append(",\"questions\":{");
+        sb.append("{\"model\":\"").append(model).append('"');
+        // state 键为协议必填（无 state 上游拒绝）——存量验收内容已拼题时发空对象 {}
+        sb.append(",\"state\":").append(Json.write(state(content, rule)));
+        sb.append(",\"questions\":{");
         boolean f = true;
         for (Map.Entry<String, NoulSpec> e : questions.entrySet()) {
             if (!f) sb.append(',');
             f = false;
             NoulSpec q = e.getValue();
             sb.append(Json.str(e.getKey()));
-            if (model.startsWith("respan/")) {
+            if (q.scoreCriteria != null) {
+                // score 题：档位选项数组各打分，响应直接回期望分 score（六档维度打分用，避免重复多道题）
+                sb.append(":{\"type\":\"score\",\"instructions\":").append(Json.str(q.instructions))
+                  .append(",\"criteria\":").append(Json.write(q.scoreCriteria)).append('}');
+            } else if (model.startsWith("respan/")) {
                 // respan 族仅收 noul 且为 jev 同款三段方言（上游 400 实测：choice 不收、criteria 须对象）
                 sb.append(":{\"type\":\"noul\",\"instructions\":").append(Json.str(q.instructions))
                   .append(",\"criteria\":{\"true\":").append(Json.str(q.yes))
@@ -118,9 +123,9 @@ public final class OpenRouterBackend implements DecisionBackend {
         q.put("instructions", question);
         q.put("criteria", criteria);
         StringBuilder sb = new StringBuilder(512);
-        sb.append("{\"model\":\"").append(model).append("\",\"state\":")
-          .append(Json.write(state(content, rule)))
-          .append(",\"questions\":{\"q\":").append(Json.write(q)).append("}}");
+        sb.append("{\"model\":\"").append(model).append('"');
+        sb.append(",\"state\":").append(Json.write(state(content, rule)));
+        sb.append(",\"questions\":{\"q\":").append(Json.write(q)).append("}}");
 
         long start = System.nanoTime();
         String body = Http.post(url, apiKey, sb.toString(), timeoutMs);
@@ -131,6 +136,8 @@ public final class OpenRouterBackend implements DecisionBackend {
     /**
      * state 组装：Respan 家族状态协议不同——不认 {rule,content}，只认 {input:消息数组, output:单条 assistant 消息}
      * （各消息 content 须为字符串、role ∈ system/user/assistant/tool）；规则进 system，被判内容进 output。
+     * rule 为 null 时省略 rule 键（纯打分请求如维度题无判定规则语义，不带 rule）；content 也为 null 时
+     * （存量验收：内容已拼题）返回空 map，序列化为 {}（state 键本身仍保留——协议必填）。
      */
     private LinkedHashMap<String, Object> state(String content, String rule) {
         LinkedHashMap<String, Object> state = new LinkedHashMap<String, Object>();
@@ -143,11 +150,11 @@ public final class OpenRouterBackend implements DecisionBackend {
             state.put("input", input);
             LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
             out.put("role", "assistant");
-            out.put("content", content);
+            out.put("content", content == null ? "" : content);   // 无 state 请求兜底空串，防 null 消息体
             state.put("output", out);
         } else {
-            state.put("rule", rule);
-            state.put("content", content);
+            if (rule != null) state.put("rule", rule);   // 纯打分请求（rule=null）省略 rule 键
+            if (content != null) state.put("content", content);   // 存量验收（content=null）省略 content 键
         }
         return state;
     }
@@ -185,11 +192,12 @@ public final class OpenRouterBackend implements DecisionBackend {
         return new NoulReply(probs, in, out, latencyMs, 0.0);
     }
 
-    /** P(yes) 字段兼容 noul / probability / p；refusal 等无值题型返回 null。 */
+    /** P(yes) 字段兼容 noul / probability / p / score（score 题回期望分）；refusal 等无值题型返回 null。 */
     private static Double probOf(Map<?, ?> a) {
         Object p = a.get("noul");
         if (!(p instanceof Number)) p = a.get("probability");
         if (!(p instanceof Number)) p = a.get("p");
+        if (!(p instanceof Number)) p = a.get("score");
         return p instanceof Number ? ((Number) p).doubleValue() : null;
     }
 

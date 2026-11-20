@@ -74,7 +74,9 @@ final class PromptLoader {
                 read("prompt.choice.other", cfg.get("prompt.choice.other", null)),
                 read("prompt.noul.no.han", cfg.get("prompt.noul.no.han", null)),
                 read("prompt.noul.no.latin", cfg.get("prompt.noul.no.latin", null)),
-                readOptional("prompt.docfilter.criterion", cfg.get("prompt.docfilter.criterion", null)));
+                readOptional("prompt.docfilter.criterion", cfg.get("prompt.docfilter.criterion", null)),
+                read("growth.dim.question", cfg.get("growth.dim.question", null)),
+                readOptional("prompt.quest.catscope", cfg.get("prompt.quest.catscope", null)));
     }
 
     /** 树级规则（建表默认与热载置换共用）：prompt.rule.{add,search} 配置的提示词文件内容，必配。 */

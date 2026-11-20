@@ -102,18 +102,25 @@ public final class JevBackend implements DecisionBackend {
             throw new IOException("缺少 jev 凭据：请在 semquest.properties 配置 jev.apikey（或 export TYPESAFE_API_KEY=...）");
         }
         StringBuilder sb = new StringBuilder(512);
-        sb.append("{\"model\":\"").append(model).append("\",\"state\":")
-          .append(Json.write(JevBackend.singleMap("content", content)))
-          .append(",\"questions\":{");
+        sb.append("{\"model\":\"").append(model).append('"');
+        // state 键保留（存量验收 content=null 发空串，内容已拼入题目）
+        sb.append(",\"state\":").append(Json.write(JevBackend.singleMap("content", content == null ? "" : content)));
+        sb.append(",\"questions\":{");
         boolean f = true;
         for (Map.Entry<String, NoulSpec> e : questions.entrySet()) {
             if (!f) sb.append(',');
             f = false;
             NoulSpec q = e.getValue();
-            sb.append(Json.str(e.getKey()))
-              .append(":{\"type\":\"noul\",\"instructions\":").append(Json.str(q.instructions))
-              .append(",\"criteria\":{\"true\":").append(Json.str(q.yes))
-              .append(",\"false\":").append(Json.str(q.no)).append("}}");
+            sb.append(Json.str(e.getKey()));
+            if (q.scoreCriteria != null) {
+                // score 题（jev-1.14 同款方言）：档位选项数组各打分，响应直接回期望分 score
+                sb.append(":{\"type\":\"score\",\"instructions\":").append(Json.str(q.instructions))
+                  .append(",\"criteria\":").append(Json.write(q.scoreCriteria)).append('}');
+            } else {
+                sb.append(":{\"type\":\"noul\",\"instructions\":").append(Json.str(q.instructions))
+                  .append(",\"criteria\":{\"true\":").append(Json.str(q.yes))
+                  .append(",\"false\":").append(Json.str(q.no)).append("}}");
+            }
         }
         sb.append("}}");
 
@@ -155,6 +162,7 @@ public final class JevBackend implements DecisionBackend {
             if (!(e.getValue() instanceof Map)) continue;
             Map<?, ?> a = (Map<?, ?>) e.getValue();
             Object p = a.get("noul");
+            if (!(p instanceof Number)) p = a.get("score");   // score 题回期望分（维度打分直接取用）
             if (p instanceof Number) probs.put(String.valueOf(e.getKey()), ((Number) p).doubleValue());
             // refusal 等其他题型跳过，视为未通过
         }

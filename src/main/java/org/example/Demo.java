@@ -48,17 +48,19 @@ public class Demo {
     public static void main(String[] args) throws Exception {
         Config cfg = Config.load();
         String backendName = args.length > 0 ? args[0] : cfg.get("backend", "jev");
-        double gate = args.length > 1 ? Double.parseDouble(args[1]) : cfg.getDouble("noulGate", 0.7);
+        double addGate = args.length > 1 ? Double.parseDouble(args[1])
+                : cfg.getDouble("addGate", cfg.getDouble("noulGate", 0.5));
+        double questGate = cfg.getDouble("questGate", 0.3);
         int timeoutMs = cfg.getInt("timeoutMs", 30000);
         String schemaPath = cfg.get("schema", "driver-intent-schema.json");
 
         DecisionBackend backend = createBackend(cfg, backendName, timeoutMs);
-        SemQuestTree tree = SemQuestTree.load(Paths.get(schemaPath), backend, gate);
+        SemQuestTree tree = SemQuestTree.load(Paths.get(schemaPath), backend, addGate, questGate);
         tree.setPrompts(PromptLoader.of(cfg));   // 判定提示词全部来自提示词文件（缺失即抛错终止）
 
         System.out.println("== 问义树 SemQuestTree ==" +
                 "\n配置: " + cfg.file() + (cfg.loaded() ? "" : "（未找到，使用代码内默认）") +
-                "\n后端: " + backend.name() + "   门控: " + gate +
+                "\n后端: " + backend.name() + "   落位门控: " + addGate + " · 检索门控: " + questGate +
                 "\n" + tree.treeView());
 
         // ── add：内容下行落位 ──────────────────────────────────────

@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -46,11 +47,12 @@ import java.util.concurrent.ThreadFactory;
  *   GET  /api/t/&lt;id&gt;/tree     → 全树结构 JSON（附表名/备注）
  *   GET  /api/t/&lt;id&gt;/leaf?name=X → 节点详情 JSON（路径 + 判据 + 落位正文；叶与内部节点共用视图）
  *   GET  /api/t/&lt;id&gt;/docs?node=X → 节点直取 JSON（子树全部叶的落位内容，零模型调用；limit 缺省 500）
- *   POST /api/t/&lt;id&gt;/node     → 增长判断节点 {parent,name,yes,no}：补层挂靠，父节点兜底存量逐条
- *                               重判过门迁入（choice 模式即新增选项）；报告回 JSON
- *   PUT  /api/t/&lt;id&gt;/node     → 修改节点 {name, newName?, yes, no}：改名/改判据，零模型调用
+ *   POST /api/t/&lt;id&gt;/node     → 增长判断节点 {parent,name,add}（yes 旧字段兼容）：补层挂靠，
+ *                               父节点兜底存量逐条重判过落位门控迁入（choice 模式即新增选项）；报告回 JSON
+ *   PUT  /api/t/&lt;id&gt;/node     → 修改节点 {name, newName?, add}：改名/改属性解释，零模型调用
  *   DELETE /api/t/&lt;id&gt;/node?name=X → 删除节点及其整个子树（含兜底叶），同步清理 grown/edits
- *   POST /api/t/&lt;id&gt;/gate     → 调参 {gate}（noul 门控）/ {choiceGate}（choice 采纳线），落盘
+ *   POST /api/t/&lt;id&gt;/gate     → 调参 {addGate}/{questGate}（落位/检索双门控，noulGate 旧字段兼容）/
+ *                               {choiceGate}（choice 采纳线），落盘
  *   POST /api/t/&lt;id&gt;/add      → 落位 {content, id?}：一条语料按判据下行落叶，随快照落盘
  *   GET  /api/t/&lt;id&gt;/extend   → 节点延伸状态（viz 进度条轮询；phase: idle/running/done/error）
  *   POST /api/t/&lt;id&gt;/extend   → 手动触发 {node}：后台串行拆细该节点（与水位 growth.splitAt×
@@ -65,7 +67,7 @@ import java.util.concurrent.ThreadFactory;
  * </pre>
  *
  * <p>多表持久化在 tables/（server.tables，每表一个 &lt;id&gt;.json：{id, name, mode, note, createdAt,
- * demo, schema{mode,gate,choiceGate,ruleAdd,ruleSearch,root}, docs, grown, edits}）。重启零模型
+ * demo, schema{mode,addGate,questGate,choiceGate,ruleAdd,ruleSearch,root}, docs, grown, edits}）。重启零模型
  * 调用：先回放 grown 增长结构、edits 修改记录再挂正文。旧版单树（driver-intent-schema.json +
  * tree-data.json）在 tables/ 为空时首启自动迁移为 demo 表「司机意图」；--reseed 只重播 demo 表
  * （schema 重建干净树 + Demo.DOCS 重新下行落位，调模型），非 demo 表不动。全新安装（无 tables/
@@ -95,7 +97,8 @@ public final class SemQuestServer {
         Config cfg = Config.load();
         int port = cfg.getInt("server.port", 8787);
         int timeoutMs = cfg.getInt("timeoutMs", 30000);
-        double gate = cfg.getDouble("noulGate", 0.7);
+        double addGate = cfg.getDouble("addGate", cfg.getDouble("noulGate", 0.5));   // addGate 新键；noulGate 旧键兼容
+        double questGate = cfg.getDouble("questGate", 0.3);
         double choiceGate = cfg.getDouble("choiceGate", 0.6);
         Path schema = Paths.get(cfg.get("schema", "driver-intent-schema.json"));
         Path dataFile = Paths.get(cfg.get("server.data", "tree-data.json"));
@@ -120,7 +123,7 @@ public final class SemQuestServer {
         ConcurrentHashMap<String, Table> tables = new ConcurrentHashMap<String, Table>();
         loadTables(tables, tablesDir, backend);
         if (tables.isEmpty() && Files.exists(schema)) {
-            Table t = migrateLegacy(schema, dataFile, backend, gate, tablesDir);
+            Table t = migrateLegacy(schema, dataFile, backend, addGate, questGate, tablesDir);
             tables.put(t.id, t);
             System.out.println("旧版单树已迁移为 demo 表「" + t.name + "」→ " + t.file.getFileName());
         }
@@ -132,7 +135,7 @@ public final class SemQuestServer {
                 reseedTable(t, backend);
             }
             if (!anyDemo && Files.exists(schema)) {
-                Table t = migrateLegacy(schema, dataFile, backend, gate, tablesDir);
+                Table t = migrateLegacy(schema, dataFile, backend, addGate, questGate, tablesDir);
                 tables.put(t.id, t);
                 reseedTable(t, backend);
             } else if (!anyDemo) {
@@ -151,10 +154,21 @@ public final class SemQuestServer {
                 t.tree.setQuestCacheCap(qcInit);
             }
         }
+        // 双门控初始值铺到全部 noul 表（配置为全局基线：旧表 schema 里的旧键 gate 会被兼容读成表级
+        // addGate，铺表保证本次新基线 addGate/questGate 对存量表立即生效；热载 watcher 同款语义）
+        for (Table t : tables.values()) {
+            synchronized (t) {
+                if (!t.tree.choiceMode()) {
+                    t.tree.setAddGate(addGate);
+                    t.tree.setQuestGate(questGate);
+                }
+            }
+        }
         // doc 过滤组配置铺到全部表（on/批次/门控/截断/总量上限；模板未配置时树内自动不生效）
         for (Table t : tables.values()) {
             synchronized (t) {
                 applyDocFilter(cfg, t.tree);
+                applyCatScope(cfg, t.tree);
             }
         }
         // 判定提示词铺到全部表（装载已在上文 fail-fast 完成）
@@ -171,11 +185,14 @@ public final class SemQuestServer {
         server.createContext("/api/models", new ModelsHandler(cfg, sel, timeoutMs));
         server.createContext("/api/model", new ModelHandler(cfg, backend, sel));
         server.createContext("/api/growth", new GrowthHandler(cfg, gstate, timeoutMs));
+        server.createContext("/api/trace", new TraceToggleHandler());
+        // 动作流默认开关：trace.enabled 配置项（默认开），运行时仍可在 viz 🔎 热切换，重启回到本配置
+        Trace.setEnabled(!"false".equalsIgnoreCase(cfg.get("trace.enabled", "true").trim()));
         server.setExecutor(Executors.newFixedThreadPool(4));
         server.start();
         System.out.println("问义树可视化服务已启动: http://localhost:" + port
-                + "   （后端 " + backend.name() + " · 模型 " + sel.model + " · 门控 " + gate
-                + " · 采纳线 " + choiceGate + " · 表 " + tables.size() + " 张）");
+                + "   （后端 " + backend.name() + " · 模型 " + sel.model + " · 落位门控 " + addGate
+                + " · 检索门控 " + questGate + " · 采纳线 " + choiceGate + " · 表 " + tables.size() + " 张）");
 
         // 配置热载：2s 轮询 properties mtime，保存即生效（双门控/查询缓存容量/判定提示词/树级规则/超时/凭据/模型清单/各后端 url·model）。
         // gate 应用到全部 noul 表，choiceGate 应用到全部 choice 表，questCacheSize 与 prompt.* 应用到全部表
@@ -197,15 +214,26 @@ public final class SemQuestServer {
                             System.out.println("[热载] 配置读取失败，保留旧配置");
                             continue;
                         }
-                        double g = cfg.getDouble("noulGate", 0.7);
-                        if (g > 0 && g <= 1) {
+                        double ag = cfg.getDouble("addGate", cfg.getDouble("noulGate", 0.5));
+                        if (ag > 0 && ag <= 1) {
                             for (Table t : tables.values()) {
-                                if (t.tree.choiceMode() || g == t.tree.gate()) continue;
+                                if (t.tree.choiceMode() || ag == t.tree.addGate()) continue;
                                 synchronized (t) {       // 与 /api/t 请求共用表锁，别绕开树
-                                    t.tree.setGate(g);
+                                    t.tree.setAddGate(ag);
                                     persistTable(t);
                                 }
-                                System.out.println("[热载] 表「" + t.name + "」门控 → " + g);
+                                System.out.println("[热载] 表「" + t.name + "」落位门控 → " + ag);
+                            }
+                        }
+                        double qg = cfg.getDouble("questGate", 0.3);
+                        if (qg > 0 && qg <= 1) {
+                            for (Table t : tables.values()) {
+                                if (t.tree.choiceMode() || qg == t.tree.questGate()) continue;
+                                synchronized (t) {
+                                    t.tree.setQuestGate(qg);
+                                    persistTable(t);
+                                }
+                                System.out.println("[热载] 表「" + t.name + "」检索门控 → " + qg);
                             }
                         }
                         double cg = cfg.getDouble("choiceGate", 0.6);
@@ -233,6 +261,9 @@ public final class SemQuestServer {
                             synchronized (t) {
                                 if (applyDocFilter(cfg, t.tree)) {
                                     System.out.println("[热载] 表「" + t.name + "」doc 过滤配置 → 已更新");
+                                }
+                                if (applyCatScope(cfg, t.tree)) {
+                                    System.out.println("[热载] 表「" + t.name + "」类目意图截断配置 → 已更新");
                                 }
                             }
                         }
@@ -313,6 +344,16 @@ public final class SemQuestServer {
         }
     }
 
+    /** 回退快照：变更会话开始前的全表状态（seq 关联会话，json 为 persistTable 同款全量结构）。 */
+    private static final class RollbackSnap {
+        final long seq;
+        final String json;
+        RollbackSnap(long seq, String json) {
+            this.seq = seq;
+            this.json = json;
+        }
+    }
+
     /** 一张表 = 一棵树：内存态 + 磁盘文件（tables/&lt;id&gt;.json）+ 增长/修改回放记录。 */
     private static final class Table {
         final String id;
@@ -325,6 +366,8 @@ public final class SemQuestServer {
         final List<Map<String, Object>> edits;
         volatile SemQuestTree tree;   // --reseed 时 schema 重建整体替换
         final ExtendStatus extend = new ExtendStatus();   // 延伸任务状态（内存态不落盘，viz 进度条轮询）
+        /** 回退快照栈（内存态不落盘，重启清空）：每次变更会话（add/addBatch/手动延伸）开始前压入，只能回退栈顶。 */
+        final ArrayDeque<RollbackSnap> rollbackSnaps = new ArrayDeque<RollbackSnap>();
 
         Table(String id, String name, String note, long createdAt, boolean demo,
               SemQuestTree tree, Path file,
@@ -338,6 +381,7 @@ public final class SemQuestServer {
             this.file = file;
             this.grown = grown;
             this.edits = edits;
+            if (tree != null) tree.setTraceTag(id);   // 动作流归属回填（viz 🔎 按表过滤）
         }
 
         /** 延伸任务状态（内存态，不落盘，重启归零）：viz 进度条轮询用。phase: idle/running/done/error。 */
@@ -429,10 +473,18 @@ public final class SemQuestServer {
         List<Map<String, Object>> grown = new ArrayList<Map<String, Object>>();
         List<Map<String, Object>> edits = new ArrayList<Map<String, Object>>();
         int docs = replayTableData(tree, m, grown, edits);
+        // 悬空一致性校验（自愈）：doc.leaves 指向已不存在节点的指针摘除——异常中断固化中间态 / 回放静默跳过的遗留
+        List<SemQuestTree.DanglingLeaf> dangling = tree.detachDanglingLeaves();
+        if (!dangling.isEmpty()) {
+            System.out.println("[载入] 「" + name + "」摘除悬空落位指针 " + dangling.size()
+                    + " 条（如 " + dangling.get(0).docId + " → " + dangling.get(0).leaf + "）");
+        }
         System.out.println("[载入] " + file.getFileName() + "「" + name + "」"
                 + (tree.choiceMode() ? "choice" : "noul") + "：落位 " + docs
                 + " · 增长 " + grown.size() + " · 修改 " + edits.size() + "（零模型调用）");
-        return new Table(id, name, note, createdAt, demo, tree, file, grown, edits);
+        Table t = new Table(id, name, note, createdAt, demo, tree, file, grown, edits);
+        if (!dangling.isEmpty()) persistTable(t);   // 摘除悬空后立即落盘自愈（否则重启又会读回悬空）
+        return t;
     }
 
     /**
@@ -447,8 +499,8 @@ public final class SemQuestServer {
                 Map<?, ?> g = (Map<?, ?>) o;
                 String parent = String.valueOf(g.get("parent"));
                 String name = String.valueOf(g.get("name"));
-                String yes = String.valueOf(g.get("yes"));
-                String no = String.valueOf(g.get("no"));
+                // add = 属性解释（新记录键）；旧记录键 yes 兼容回退
+                String add = textVal(g.get("add"), textVal(g.get("yes"), ""));
                 if (tree.hasNode(name)) {
                     // 多表快照的 schema 已含增长节点（persistTable 存活树全量），记录仅补建缺失者
                     continue;
@@ -457,12 +509,11 @@ public final class SemQuestServer {
                     System.out.println("[回放] 跳过增长记录 " + name + "：父节点 " + parent + " 已不存在");
                     continue;
                 }
-                tree.addNode(parent, name, yes, no);
+                tree.addNode(parent, name, add);
                 LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
                 rec.put("parent", parent);
                 rec.put("name", name);
-                rec.put("yes", yes);
-                rec.put("no", no);
+                rec.put("add", add);
                 grown.add(rec);
             }
         }
@@ -472,18 +523,17 @@ public final class SemQuestServer {
                 Map<?, ?> e = (Map<?, ?>) o;
                 String name = String.valueOf(e.get("name"));
                 String newName = e.get("newName") == null ? null : String.valueOf(e.get("newName"));
-                String yes = e.get("yes") == null ? null : String.valueOf(e.get("yes"));
-                String no = e.get("no") == null ? null : String.valueOf(e.get("no"));
+                String add = e.get("add") == null ? (e.get("yes") == null ? null : String.valueOf(e.get("yes")))
+                        : String.valueOf(e.get("add"));
                 if (!tree.hasNode(name)) {
                     System.out.println("[回放] 跳过修改记录 " + name + "：节点已不存在");
                     continue;
                 }
-                tree.editNode(name, newName, yes, no);
+                tree.editNode(name, newName, add);
                 LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
                 rec.put("name", name);
                 if (newName != null) rec.put("newName", newName);
-                if (yes != null) rec.put("yes", yes);
-                if (no != null) rec.put("no", no);
+                if (add != null) rec.put("add", add);
                 edits.add(rec);
             }
         }
@@ -506,14 +556,24 @@ public final class SemQuestServer {
         return n;
     }
 
+    /** 回放字段取值：Object → String，null/字面 "null" 归一为 dft（旧版 String.valueOf(null) 瑕疵兼容）。 */
+    private static String textVal(Object o, String dft) {
+        if (o == null) return dft;
+        String s = String.valueOf(o);
+        return "null".equals(s) ? dft : s;
+    }
+
     /**
      * 旧版单树（driver-intent-schema.json + tree-data.json）迁移为 demo 表「司机意图」：
      * 纯结构迁移 + 快照回放，零模型调用；tree-data.json 缺失时为空表（可 --reseed 补种）。
      */
     private static Table migrateLegacy(Path schemaFile, Path dataFile, DecisionBackend backend,
-                                       double gateDefault, Path tablesDir) throws IOException {
+                                       double addGateDefault, double questGateDefault, Path tablesDir) throws IOException {
         Map<String, Object> schema = Json.parseObject(new String(Files.readAllBytes(schemaFile), UTF8));
-        if (!schema.containsKey("noulGate") && !schema.containsKey("gate")) schema.put("noulGate", gateDefault);
+        if (!schema.containsKey("addGate") && !schema.containsKey("noulGate") && !schema.containsKey("gate")) {
+            schema.put("addGate", addGateDefault);
+            schema.put("questGate", questGateDefault);
+        }
         SemQuestTree tree = SemQuestTree.fromMap(schema, backend);
         String id = newId(tablesDir);
         Path file = tablesDir.resolve(id + ".json");
@@ -672,11 +732,13 @@ public final class SemQuestServer {
                     String note = req.get("note") instanceof String ? ((String) req.get("note")).trim() : "";
                     String id = newId(tablesDir);
                     SemQuestTree tree = SemQuestTree.createEmpty(backend, "choice".equals(mode),
-                            cfg.getDouble("noulGate", 0.7), cfg.getDouble("choiceGate", 0.6),
+                            cfg.getDouble("addGate", cfg.getDouble("noulGate", 0.5)),
+                            cfg.getDouble("questGate", 0.3), cfg.getDouble("choiceGate", 0.6),
                             PromptLoader.rule(cfg, "prompt.rule.add"),
                             PromptLoader.rule(cfg, "prompt.rule.search"));
                     tree.setQuestCacheCap(Math.max(0, cfg.getInt("questCacheSize", 256)));
                     applyDocFilter(cfg, tree);
+                    applyCatScope(cfg, tree);
                     tree.setPrompts(PromptLoader.of(cfg));
                     Table t = new Table(id, name, note, System.currentTimeMillis(), false, tree,
                             tablesDir.resolve(id + ".json"),
@@ -802,15 +864,41 @@ public final class SemQuestServer {
             } else if ("gate".equals(action)) {
                 new GateHandler().handle(t, ex);
             } else if ("quest".equals(action)) {
-                new QuestHandler().handle(t, ex);
+                Trace.Session ts = Trace.beginSession(t.id, "quest", null);
+                try {
+                    new QuestHandler().handle(t, ex);
+                } finally {
+                    Trace.endSession(ts);
+                }
             } else if ("add".equals(action)) {
-                new AddHandler(cfg, backend, gstate).handle(t, ex);
+                Trace.Session ts = Trace.beginSession(t.id, "add", null);
+                try {
+                    pushRollbackSnapshot(t, ts == null ? -1L : ts.seq);   // 回退快照：落位/生长变更前
+                    new AddHandler(cfg, backend, gstate).handle(t, ex);
+                } finally {
+                    Trace.endSession(ts);
+                }
             } else if ("addBatch".equals(action)) {
-                new AddBatchHandler(cfg, backend, gstate).handle(t, ex);
+                Trace.Session ts = Trace.beginSession(t.id, "addBatch", null);
+                try {
+                    pushRollbackSnapshot(t, ts == null ? -1L : ts.seq);   // 回退快照：批量落位变更前
+                    new AddBatchHandler(cfg, backend, gstate).handle(t, ex);
+                } finally {
+                    Trace.endSession(ts);
+                }
+            } else if ("rollback".equals(action)) {
+                Trace.Session ts = Trace.beginSession(t.id, "rollback", null);
+                try {
+                    new RollbackHandler(backend).handle(t, ex);   // 回退不压快照（恢复的是历史快照，无可再撤点）
+                } finally {
+                    Trace.endSession(ts);
+                }
             } else if ("extend".equals(action)) {
-                new ExtendHandler(cfg, backend, gstate).handle(t, ex);
+                new ExtendHandler(cfg, backend, gstate).handle(t, ex);   // session 开在异步任务线程内（extendTask）
             } else if ("doc".equals(action)) {
                 new DocHandler().handle(t, ex);
+            } else if ("trace".equals(action)) {
+                new TraceHandler().handle(t, ex);
             } else {
                 json(ex, 404, "{\"error\":" + Json.str("未知动作: " + action) + "}");
             }
@@ -933,17 +1021,17 @@ public final class SemQuestServer {
                     Map<String, Object> req = Json.parseObject(readBody(ex));
                     String parent = text(req, "parent");
                     String name = text(req, "name");
-                    // choice 模式选项描述可选（留空用选项名本身）；noul 模式 yes 判据必填
-                    String yes = t.tree.choiceMode()
-                            ? (req.get("yes") instanceof String ? ((String) req.get("yes")).trim() : "")
-                            : text(req, "yes");
-                    String no = req.get("no") instanceof String ? (String) req.get("no") : "";
-                    SemQuestTree.GrowReport rep = t.tree.growNode(parent, name, yes, no);
+                    // 属性解释 add 新字段（yes 旧字段兼容）；choice 模式选项描述可选（留空用选项名本身），
+                    // noul 模式必填（空值由 growNode 统一抛错）
+                    Object a = req.get("add") instanceof String ? req.get("add") : req.get("yes");
+                    String add = t.tree.choiceMode()
+                            ? (a instanceof String ? ((String) a).trim() : "")
+                            : (a instanceof String ? (String) a : null);
+                    SemQuestTree.GrowReport rep = t.tree.growNode(parent, name, add);
                     LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
                     rec.put("parent", parent);
                     rec.put("name", name.trim());
-                    rec.put("yes", yes.trim());
-                    rec.put("no", no);
+                    rec.put("add", add == null ? "" : add.trim());
                     t.grown.add(rec);
                     persistTable(t);
                     json(ex, 200, Json.write(reportMap(rep)));
@@ -959,22 +1047,20 @@ public final class SemQuestServer {
                     Map<String, Object> req = Json.parseObject(readBody(ex));
                     String name = text(req, "name");
                     String newName = req.get("newName") instanceof String ? (String) req.get("newName") : null;
-                    String yes = req.get("yes") instanceof String ? (String) req.get("yes") : null;
-                    String no = req.get("no") instanceof String ? (String) req.get("no") : null;
-                    SemQuestTree.EditReport rep = t.tree.editNode(name, newName, yes, no);
+                    Object a = req.get("add") instanceof String ? req.get("add") : req.get("yes");   // add 新字段（yes 旧字段兼容）
+                    String add = a instanceof String ? (String) a : null;
+                    SemQuestTree.EditReport rep = t.tree.editNode(name, newName, add);
                     LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
                     rec.put("name", name.trim());
                     if (!rep.newName.equals(rep.oldName)) rec.put("newName", rep.newName);
-                    rec.put("yes", rep.yes);
-                    rec.put("no", rep.no);
+                    rec.put("add", rep.add);
                     t.edits.add(rec);
                     persistTable(t);
                     LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>(t.tree.metaMap());
                     out.put("oldName", rep.oldName);
                     out.put("newName", rep.newName);
                     out.put("parent", rep.parent);
-                    out.put("yes", rep.yes);
-                    out.put("no", rep.no);
+                    out.put("add", rep.add);
                     json(ex, 200, Json.write(out));
                 } catch (IllegalArgumentException e) {
                     json(ex, 400, "{\"error\":" + Json.str(e.getMessage() == null ? "非法请求" : e.getMessage()) + "}");
@@ -1017,7 +1103,8 @@ public final class SemQuestServer {
         }
     }
 
-    /** POST /api/t/&lt;id&gt;/gate {gate}（noul 门控）/ {choiceGate}（choice 采纳线）→ 调参并落盘。 */
+    /** POST /api/t/&lt;id&gt;/gate {addGate}/{questGate}（落位/检索双门控，noulGate 旧字段兼容）/
+     *  {choiceGate}（choice 采纳线）→ 调参并落盘。 */
     private static final class GateHandler extends BaseHandler {
 
         void handle(Table t, HttpExchange ex) throws IOException {
@@ -1027,12 +1114,15 @@ public final class SemQuestServer {
             }
             try {
                 Map<String, Object> req = Json.parseObject(readBody(ex));
-                Object g = req.get("noulGate");
+                Object g = req.get("addGate");
+                if (!(g instanceof Number) && req.get("noulGate") instanceof Number) g = req.get("noulGate");
+                Object qg = req.get("questGate");
                 Object cg = req.get("choiceGate");
-                if (!(g instanceof Number) && !(cg instanceof Number)) {
-                    throw new IllegalArgumentException("缺 noulGate / choiceGate 数值字段");
+                if (!(g instanceof Number) && !(qg instanceof Number) && !(cg instanceof Number)) {
+                    throw new IllegalArgumentException("缺 addGate / questGate / choiceGate 数值字段");
                 }
-                if (g instanceof Number) t.tree.setGate(((Number) g).doubleValue());
+                if (g instanceof Number) t.tree.setAddGate(((Number) g).doubleValue());
+                if (qg instanceof Number) t.tree.setQuestGate(((Number) qg).doubleValue());
                 if (cg instanceof Number) t.tree.setChoiceGate(((Number) cg).doubleValue());
                 persistTable(t);
                 json(ex, 200, Json.write(t.tree.metaMap()));
@@ -1289,12 +1379,13 @@ public final class SemQuestServer {
     /**
      * 落兜底同步生长：add 落位全为兜底叶（或空树根叶）→ 树里没有能承接这条内容的类别，
      * 生成器按本条内容为断路层提出 ≤growth.maxNew 个新分支 → 逐个 growNode 入树（自带存量重判，
-     * 从 GrowReport.moves 查本条是否收编）→ 未收编 undoGrow 原位回滚（不删文档，存量还原原位）；
-     * 任一收编即响应 leaves 换为新枝、记 grown auto（回放零模型）并挂 growthStep。
-     * 全程在表锁内（TableRouter 已 synchronized(t)）；生成模型 mock 判定链路走 MockGenerator（零 token），
-     * 真实链路走 openrouter chat completions（growth.model，凭据复用 openrouter.apikey，
-     * 生成提示词经 growth.prompt 键指向的提示词文件（构造时读取，缺失/空白记 growthStep.failed）；
-     * growth.maxTokens / growth.thinking 限住思考型模型的输出量，
+     * 从 GrowReport.moves 查本条是否收编）→ 收编后再过维度验收（子维度 > 父维度，不过 undoGrow 回滚）；
+     * 任一通过验收即响应 leaves 换为新枝、记 grown auto（回放零模型）并挂 growthStep。
+     * 生成语境带高分落选信号（本层未过落位门控但 P 值不低的分支判据，growth.nearMiss.gate）——
+     * 零额外调用防相近分支。全程在表锁内（TableRouter 已 synchronized(t)）；生成模型 mock 判定链路走
+     * MockGenerator（零 token），真实链路走 openrouter chat completions（growth.model，凭据复用
+     * openrouter.apikey，生成提示词经 growth.prompt 键指向的提示词文件（构造时读取，缺失/空白记
+     * growthStep.failed）；growth.maxTokens / growth.thinking 限住思考型模型的输出量，
      * 把本步的墙钟耗时从几十秒压到几秒）。失败原因也写进 growthStep。
      */
     private static void growOnFallback(Table t, String docId, String content,
@@ -1321,7 +1412,7 @@ public final class SemQuestServer {
         if (fb == null) return;
         List<String[]> siblings = t.tree.branchView(parent);
         if (siblings == null) return;
-        int maxBranches = cfg.getInt("growth.maxBranches", 12);
+        int maxBranches = cfg.getInt("growth.maxBranches", 20);
         if (siblings.size() >= maxBranches) {   // 护栏：层满不长，防炸树
             growthStep(out, parent, 0, 0, 0, 0, null, null, "该层分支已满（growth.maxBranches=" + maxBranches + "）");
             return;
@@ -1342,16 +1433,31 @@ public final class SemQuestServer {
                         growthModelOf(cfg, gstate),
                         apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
                         cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null),
-                        cfg.get("growth.extend.prompt", null));
+                        cfg.get("growth.extend.prompt", null),
+                        t.id);
             } catch (IllegalStateException e) {
                 // 提示词文件装载失败：不外抛，记入 growthStep.failed（与生成失败同路径）
                 growthStep(out, parent, 0, 0, 0, 0, null, null, "生长提示词装载失败: " + e.getMessage());
                 return;
             }
         }
+        // 高分落选信号：断路层本次判定里未过落位门控但 P 值 ≥ growth.nearMiss.gate 的分支（判据已有，零额外调用）
+        List<String> nearMisses = collectNearMisses(t, rep, parent, cfg);
+        String parentAdd = rootIsLeaf && parent.equals(rootName) ? "" : parentAddOf(t, parent);
+        // 动作流：横向生长触发事件（后续 llm.gen / act.rejudge / act.dim-check / act.rollback 依次跟随）
+        Map<String, Object> td = new LinkedHashMap<String, Object>();
+        td.put("trigger", "add 落兜底");
+        td.put("docId", docId);
+        td.put("content", content.length() > 120 ? content.substring(0, 120) + "…" : content);
+        td.put("parent", parent);
+        td.put("fallbackLeaf", fb);
+        td.put("parentAdd", parentAdd);
+        td.put("nearMisses", nearMisses);
+        Trace.record(t.id, "act.grow-h", "横向生长触发 @ " + parent, td, null, null, 0, 0, 0);
         CriterionGenerator.GrowthResult g;
         try {
-            g = gen.generate(parent, siblings, java.util.Collections.singletonList(content),
+            g = gen.generate(parent, parentAdd, siblings, nearMisses,
+                    java.util.Collections.singletonList(content),
                     cfg.getInt("growth.maxNew", 2));
         } catch (Exception e) {
             growthStep(out, parent, 0, 0, 0, 0, null, null, "判据生成失败: " + e.getMessage());
@@ -1362,7 +1468,8 @@ public final class SemQuestServer {
                     "生成器认为该层无值得生长的区分");
             return;
         }
-        // 逐分支验收：growNode 入树（本条在重判存量里）→ 查本条收编与否 → 未收编 undoGrow 原位回滚
+        // 逐分支验收（双测）：growNode 入树（本条在重判存量里）→ 收编判定 → 维度递进（子维度 > 父维度）→
+        // 任一不过 undoGrow 原位回滚
         List<Object> kept = new ArrayList<Object>();
         List<Object> rolledBack = new ArrayList<Object>();
         String newLeaf = null;
@@ -1370,7 +1477,7 @@ public final class SemQuestServer {
             String name = b[0];
             SemQuestTree.GrowReport gr;
             try {
-                gr = t.tree.growNode(parent, name, b[1], null);
+                gr = t.tree.growNode(parent, name, b[1]);
             } catch (Exception e) {
                 continue;   // 撞名/非法名等：跳过该分支
             }
@@ -1383,18 +1490,47 @@ public final class SemQuestServer {
                     break;
                 }
             }
+            // 维度验收（第二测）：维度 score 题随首条存量重判同请求发出（共用 state，零额外请求），
+            // score 期望分即子判据维度分；父分读节点存档（收编时已 setDim），父未评降级放行
+            Double childDim = null;
+            if (hit && dimGateOn(cfg)) {
+                if (gr.dimProb == null) {
+                    System.out.println("[生长] 维度题缺席（choice 链/父判据空），降级放行: " + name);
+                } else {
+                    double pd = t.tree.dimOf(parent);   // 父存档分；未评（0）→ 放行
+                    double cd = gr.dimProb;
+                    boolean passed = !(pd > 0 && cd <= pd);   // 父未评或递进成立均放行
+                    Map<String, Object> dd = new LinkedHashMap<String, Object>();
+                    dd.put("node", name);
+                    dd.put("add", b[1]);
+                    dd.put("childDim", cd);
+                    dd.put("parentDim", pd);
+                    dd.put("result", passed ? "passed" : "rejected");
+                    Trace.record(t.id, "act.dim-check",
+                            passed ? "维度验收通过 · " + name + "（dim=" + cd + " > 父 " + pd + "）"
+                                   : "维度验收未过 · " + name + "（dim=" + cd + " ≤ 父 " + pd + "）",
+                            dd, null, null, 0, 0, 0);
+                    if (!passed) {
+                        hit = false;   // 维度未递进：视作未收编 → 走回滚
+                        growthStepDimNote(name, cd, pd);
+                    } else {
+                        childDim = cd;
+                    }
+                }
+            }
             if (hit) {
                 LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
                 rec.put("parent", parent);
                 rec.put("name", name);
-                rec.put("yes", b[1]);
-                rec.put("no", "");
+                rec.put("add", b[1]);
                 rec.put("auto", Boolean.TRUE);   // 生长来源标记：回放时零模型恢复，viz 可识别为自动长出
                 t.grown.add(rec);
+                if (childDim != null) t.tree.setDim(name, childDim);   // 维度分回存节点（下次作为父验收基准）
                 LinkedHashMap<String, Object> br = new LinkedHashMap<String, Object>();
                 br.put("name", name);
-                br.put("yes", b[1]);
+                br.put("add", b[1]);
                 br.put("prob", prob);
+                if (childDim != null) br.put("dim", childDim);   // 维度分（0~5 期望值，精确小数）
                 kept.add(br);
                 newLeaf = name;
                 persistTable(t);
@@ -1415,8 +1551,67 @@ public final class SemQuestServer {
             growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, kept.size(), kept, null, null);
         } else {
             growthStep(out, parent, g.inputTokens, g.outputTokens, g.latencyMs, 0, null, rolledBack,
-                    "验收未过：本条内容未收编进任何新枝，已全部回滚");
+                    "验收未过：本条内容未收编进任何新枝（含维度递进未过），已全部回滚");
         }
+        // 动作流：横向生长收尾（kept/rolledBack 汇总；过程中的 llm.gen、act.rejudge、act.dim-check、act.rollback 已分别入流）
+        Map<String, Object> fd = new LinkedHashMap<String, Object>();
+        fd.put("parent", parent);
+        fd.put("docId", docId);
+        fd.put("kept", kept);
+        fd.put("rolledBack", rolledBack);
+        fd.put("newLeaf", newLeaf);
+        Trace.record(t.id, "act.grow-h", newLeaf != null
+                ? "横向生长完成 · 收编「" + newLeaf + "」"
+                : "横向生长全回滚（" + rolledBack.size() + " 候选均未过验收）",
+                fd, null, null, 0, 0, 0);
+    }
+
+    /** 父节点属性解释（生长语境包 {parentAdd}；无此节点/ROOT/未配置回 ""——生成模板按根层措辞）。 */
+    private static String parentAddOf(Table t, String parent) {
+        String add = t.tree.nodeAdd(parent);
+        return add == null ? "" : add.trim();
+    }
+
+    /** 高分落选信号采集：断路层最后一步判定 probs 里 P ∈ [nearMiss.gate, addGate) 的分支 → 「名字（P=x）：属性解释」行。 */
+    private static List<String> collectNearMisses(Table t, SemQuestTree.AddReport rep,
+                                                  String parent, Config cfg) {
+        double gateLo = cfg.getDouble("growth.nearMiss.gate", 0.3);
+        double gateHi = t.tree.addGate();
+        SemQuestTree.Step last = null;
+        for (SemQuestTree.Step s : rep.steps) {
+            if (parent.equals(s.node)) last = s;
+        }
+        List<String[]> siblings = t.tree.branchView(parent);
+        List<String> out = new ArrayList<String>();
+        if (last == null || siblings == null) return out;
+        List<Map.Entry<String, Double>> scored = new ArrayList<Map.Entry<String, Double>>(last.probs.entrySet());
+        Collections.sort(scored, new Comparator<Map.Entry<String, Double>>() {
+            public int compare(Map.Entry<String, Double> a, Map.Entry<String, Double> b) {
+                return Double.compare(b.getValue(), a.getValue());
+            }
+        });
+        int cap = 4;   // 取 top 4：语境包足够，又不撑提示词
+        for (Map.Entry<String, Double> e : scored) {
+            if (out.size() >= cap) break;
+            double p = e.getValue();
+            if (!(p >= gateLo && p < gateHi)) continue;
+            String crit = "";
+            for (String[] s : siblings) {
+                if (s[0].equals(e.getKey())) { crit = s[1]; break; }
+            }
+            out.add(e.getKey() + "（P=" + String.format("%.2f", p) + "）：" + crit);
+        }
+        return out;
+    }
+
+    /** 维度递进未过的日志备注（回滚明细由调用方并入 rolledBack；仅留轨迹可见的调试输出）。 */
+    private static void growthStepDimNote(String name, double child, double parent) {
+        System.out.println("[生长] 维度递进未过: " + name + " dim=" + child + " ≤ 父 dim=" + parent + " → 回滚");
+    }
+
+    /** 维度递进验收开关（growth.dimGate，默认开）；mock 链路六档题全低 P→维度分 0→父未评放行，无需关。 */
+    private static boolean dimGateOn(Config cfg) {
+        return !"false".equalsIgnoreCase(cfg.get("growth.dimGate", "true"));
     }
 
     /** growthStep 组装进 out：branches=验收保留的新枝明细；failedBranches=已回滚的分支名；failed=放弃原因。 */
@@ -1444,8 +1639,9 @@ public final class SemQuestServer {
     }
 
     /** 延伸生成器：mock 判定链路走 MockGenerator（零 token）；真实链路 openrouter chat——
-     *  growth.extend.prompt 键指向的提示词文件构造时读取（缺失/空白即抛错，由 extendTask 记入任务状态）；缺凭据回 null。 */
-    private static CriterionGenerator buildExtendGenerator(Config cfg, SwitchableBackend backend, GrowthState gstate) {
+     *  growth.extend.prompt 键指向的提示词文件构造时读取（缺失/空白即抛错，由 extendTask 记入任务状态）；缺凭据回 null。
+     *  traceTag 传表 id：延伸生成的 llm.gen 动作流事件归属该表（viz 🔎 按表过滤）。 */
+    private static CriterionGenerator buildExtendGenerator(Config cfg, SwitchableBackend backend, GrowthState gstate, Table t) {
         if ("mock".equals(backend.name())) return new CriterionGenerator.MockGenerator();
         String apiKey = cfg.get("openrouter.apikey", null);
         if (apiKey == null || apiKey.trim().isEmpty()) return null;
@@ -1454,7 +1650,8 @@ public final class SemQuestServer {
                 growthModelOf(cfg, gstate),
                 apiKey, cfg.getInt("timeoutMs", 30000), cfg.get("growth.prompt", null),
                 cfg.getInt("growth.maxTokens", 0), cfg.get("growth.thinking", null),
-                cfg.get("growth.extend.prompt", null));
+                cfg.get("growth.extend.prompt", null),
+                t.id);
     }
 
     /** 延伸水位：growth.splitAt × growth.splitFactor（默认 255×0.7=178），≤0 视为关闭水位触发。 */
@@ -1472,30 +1669,70 @@ public final class SemQuestServer {
                 cfg.getInt("docFilter.maxDocs", 100));
     }
 
+    /** 类目意图截断组配置读取并应用到树（代码默认关；另须 prompt.quest.catscope 模板就位才实际生效）。返回是否发生变化。 */
+    private static boolean applyCatScope(Config cfg, SemQuestTree tree) {
+        boolean on = "true".equalsIgnoreCase(cfg.get("questCatScope", "false"));
+        return tree.setQuestCatScope(on,
+                cfg.getDouble("questCatGate", 0.85),
+                cfg.getInt("questCatScope.maxDocs", 200));
+    }
+
+    /** 回退快照栈容量：只保最近 10 次变更会话的可回退点（内存态，重启清空）。 */
+    private static final int ROLLBACK_SNAP_CAP = 10;
+
     /**
-     * 水位触发（add/addBatch 落位后、表锁内调用）：落位叶（兜底叶则上溯其父节点）存量超过水位 →
-     * 提交后台延伸任务，本请求立即返回不等待；同一时刻每表至多一个延伸任务在跑（单工池排队）。
+     * 回退快照压栈（表锁内调用）：变更会话（add/addBatch/手动延伸）beginSession 后、任何变更前调用——
+     * 快照 = persistTable 同款全量结构（schema+docs+grown+edits）的 JSON；追踪关闭时 seq 以 -1 占位
+     * （viz 无会话列表不显按钮，API 仍可按栈顶回退）。栈满淘汰最旧。
+     */
+    private static void pushRollbackSnapshot(Table t, long seq) {
+        synchronized (t) {
+            LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("schema", t.tree.schemaMap());
+            m.put("docs", t.tree.docsSnapshot());
+            m.put("grown", t.grown);
+            m.put("edits", t.edits);
+            t.rollbackSnaps.addLast(new RollbackSnap(seq, Json.write(m)));
+            while (t.rollbackSnaps.size() > ROLLBACK_SNAP_CAP) t.rollbackSnaps.pollFirst();
+        }
+    }
+
+    /**
+     * 水位触发（add/addBatch 落位后、表锁内同步执行）：落位叶（兜底叶则上溯其父节点）存量超过水位 →
+     * 当场跑完延伸（多轮生成/验收/重判迁移直到存量收编完或撞终止），请求在延伸结束后才返回——一次 add
+     * = 判定落位 + 纵向生长的完整动作流（trace 同会话），期间同表其他请求在表锁上排队，感知为一次行动。
+     * 手动触发仍走 submitExtend 后台异步（进度条可视）。
      */
     private static void maybeExtendOnWatermark(Table t, SemQuestTree.AddReport rep,
                                                Config cfg, SwitchableBackend backend, GrowthState gstate) {
         if (!extendOnOf(cfg, gstate)) return;
         int watermark = extendWatermark(cfg);
         if (watermark <= 0) return;
-        if ("running".equals(t.extend.phase)) return;   // 已有延伸在跑：本条留给它下一轮快照
         for (String leaf : rep.leaves) {
             String target = leaf.endsWith(SemQuestTree.OTHER_SUFFIX)
                     ? leaf.substring(0, leaf.length() - SemQuestTree.OTHER_SUFFIX.length()) : leaf;
             if (t.tree.extendDocCount(target) > watermark) {
-                submitExtend(t, target, false, cfg, backend, gstate);
-                return;   // 一次落位最多触发一个，其余超水位叶由该任务完成后下次落位再触发
+                if (!resetExtendStatus(t, target)) return;   // 已有延伸在跑：本条留给下一轮
+                extendCore(t, target, false, cfg, backend, gstate, t.extend);   // 表锁内同步执行（synchronized 可重入）
+                return;   // 一次落位最多触发一个，其余超水位叶由下次落位再触发
             }
         }
     }
 
     /** 提交延伸任务（表锁内调用）：running 中幂等忽略；重置状态后交后台单工池。manual=手动触发（强制拆细，不受水位限制）。 */
     private static void submitExtend(Table t, String node, boolean manual, Config cfg, SwitchableBackend backend, GrowthState gstate) {
+        if (!resetExtendStatus(t, node)) return;
+        EXTEND_POOL.execute(new Runnable() {
+            public void run() {
+                extendTask(t, node, cfg, backend, gstate);
+            }
+        });
+    }
+
+    /** 延伸状态重置（表锁内调用）：running 中不重置返回 false。 */
+    private static boolean resetExtendStatus(Table t, String node) {
         Table.ExtendStatus st = t.extend;
-        if ("running".equals(st.phase)) return;
+        if ("running".equals(st.phase)) return false;
         st.phase = "running";
         st.node = node;
         st.current = "排队中…";
@@ -1511,29 +1748,45 @@ public final class SemQuestServer {
         st.genOut = 0;
         st.startedAt = System.currentTimeMillis();
         st.finishedAt = 0;
-        EXTEND_POOL.execute(new Runnable() {
-            public void run() {
-                extendTask(t, node, manual, cfg, backend, gstate);
-            }
-        });
+        return true;
+    }
+
+    /** 异步手动延伸任务：后台单工线程 + 独立 extend 会话（进度条可视）；水位触发改走同步 extendCore（事件并入 add 会话）。 */
+    private static void extendTask(Table t, String node, Config cfg, SwitchableBackend backend, GrowthState gstate) {
+        Trace.Session ts = Trace.beginSession(t.id, "extend", "纵向生长 @ " + node);   // session 开在任务线程（异步）；endSession 由任务体 finally 兜底
+        try {
+            pushRollbackSnapshot(t, ts == null ? -1L : ts.seq);   // 回退快照：延伸变更前
+            extendCore(t, node, true, cfg, backend, gstate, t.extend);
+        } finally {
+            Trace.endSession(ts);
+        }
     }
 
     /**
-     * 延伸任务体（后台单工线程）：串行闭环——每轮「锁内快照(planExtend) → 锁外生成 1 个更细子类 →
-     * 锁内入树 → 逐条锁外重判 + 锁内短临界区移动 → 轮末落盘」。模型调用全程不持表锁，锁段只包
-     * 结构变更与指针移动，add/quest 照常并行（大脑夜间加固，白天照常运转）。
-     * 终止：水位以下（仅自动触发；手动=强制拆细不受水位限）/ 生成器返回空（无更细区分）/
-     * 达 growth.extend.maxNew / 撞名 / 层满 / 存量不足 2 条 / 轮内零收编（undoGrow 零模型回滚）。
-     * 全程可递复用于任意深度（2、3、4…层同一链路）。
+     * 延伸核心执行体（同步调用，两种触发共用）：
+     * ① 水位触发——在 add 请求线程 + 表锁内直跑（synchronized 可重入），判定落位与纵向生长合成一次完整
+     *    add：动作流并入当前 add 会话，期间同表其他 add/quest 在表锁上排队，响应在延伸结束后才返回；
+     * ② 手动触发——后台单工线程跑（extendTask 包独立 extend 会话，进度条可视）。
+     * 串行闭环——每轮「锁内快照(planExtend) → 锁外生成 1 个更细子类 → 锁内入树 → 逐条锁外重判 +
+     * 锁内短临界区移动 → 轮末落盘」。自动触发的终止：存量收编完（plan.totalDocs≤0，理想态兜底清空）/
+     * 生成器返回空（无更细区分）/ 达 growth.extend.maxNew / 撞名 / 层满 / 维度未递进 / 轮内零收编
+     * （undoGrow 零模型回滚）；手动强制拆细不受水位限制（存量不足 2 条停）。全程可递复用于任意深度。
      */
-    private static void extendTask(Table t, String node, boolean manual, Config cfg, SwitchableBackend backend, GrowthState gstate) {
-        Table.ExtendStatus st = t.extend;
+    private static void extendCore(Table t, String node, boolean manual, Config cfg, SwitchableBackend backend, GrowthState gstate, Table.ExtendStatus st) {
+        // 动作流：纵向生长（节点延伸）入口
+        {
+            Map<String, Object> ed = new LinkedHashMap<String, Object>();
+            ed.put("node", node);
+            ed.put("manual", manual);
+            ed.put("maxRounds", cfg.getInt("growth.extend.maxNew", 8));
+            Trace.record(t.id, "act.grow-v", "纵向生长入口 @ " + node + (manual ? "（手动触发）" : "（水位触发·同步）"),
+                    ed, null, null, 0, 0, 0);
+        }
         try {
             int maxRounds = cfg.getInt("growth.extend.maxNew", 8);
             int sampleN = cfg.getInt("growth.extend.samples", 40);
-            int watermark = extendWatermark(cfg);
             st.maxRounds = maxRounds;
-            CriterionGenerator gen = buildExtendGenerator(cfg, backend, gstate);
+            CriterionGenerator gen = buildExtendGenerator(cfg, backend, gstate, t);
             if (gen == null) {
                 st.phase = "error";
                 st.result = "缺 openrouter 凭据，无法生成判据";
@@ -1550,7 +1803,7 @@ public final class SemQuestServer {
                 SemQuestTree.ExtendPlan plan;
                 synchronized (t) {
                     plan = t.tree.planExtend(node, sampleN);
-                    int maxBranches = cfg.getInt("growth.maxBranches", 12);
+                    int maxBranches = cfg.getInt("growth.maxBranches", 20);
                     if (plan.siblings.size() >= maxBranches) {
                         stop = "该层分支已满（growth.maxBranches=" + maxBranches + "）";
                         break;
@@ -1561,15 +1814,15 @@ public final class SemQuestServer {
                         stop = "存量不足 2 条，已无可拆细的空间";
                         break;
                     }
-                } else if (plan.totalDocs <= watermark) {
-                    stop = "已降至水位以下";
+                } else if (plan.totalDocs <= 0) {
+                    stop = "存量已全部收编（兜底清空）";   // 水位只决定触发起点，进入后跑到收编完为止
                     break;
                 }
                 int judgedBase = st.rejudged;   // 进度全程累计口径：多轮百分比单调不回跳
                 st.totalDocs += plan.totalDocs;
                 st.current = "生成更细的子类判据…";
-                CriterionGenerator.GrowthResult g = gen.generateExtend(node, plan.parentYes, plan.totalDocs,
-                        plan.siblings, plan.samples);
+                CriterionGenerator.GrowthResult g = gen.generateExtend(node, plan.parentAdd,
+                        plan.totalDocs, plan.siblings, plan.samples);
                 st.genIn += g.inputTokens;   // 生成账单：与重判账单（judgeOne 累加进 stats）口径互补
                 st.genOut += g.outputTokens;
                 if (g.branches.isEmpty()) {
@@ -1577,19 +1830,53 @@ public final class SemQuestServer {
                     break;
                 }
                 String[] b = g.branches.get(0);
+                // 维度验收（生长同款第二测）：延伸无重判可并 → 一次决策请求两道 score 题（父/子判据各一题，
+                // 共用 state 无 rule），child > parent 由代码比较；打分失败降级放行
+                Double childDim = null;
+                double pcPd = 0.0d;   // 延伸验收现场打的父维度分（入树后同步存档，供横向链后续验收）
+                if (dimGateOn(cfg)) {
+                    st.current = "维度打分…";
+                    try {
+                        double[] pc = t.tree.judgeDimPair(plan.parentAdd, b[1]);
+                        double pd = pc[0];
+                        double cd = pc[1];
+                        boolean passed = !(pd > 0 && cd <= pd);
+                        Map<String, Object> dd = new LinkedHashMap<String, Object>();
+                        dd.put("node", b[0]);
+                        dd.put("add", b[1]);
+                        dd.put("childDim", cd);
+                        dd.put("parentDim", pd);
+                        dd.put("result", passed ? "passed" : "rejected");
+                        Trace.record(t.id, "act.dim-check",
+                                passed ? "维度验收通过 · " + b[0] + "（dim=" + cd + " > 父 " + pd + "）"
+                                       : "维度验收未过 · " + b[0] + "（dim=" + cd + " ≤ 父 " + pd + "）",
+                                dd, null, null, 0, 0, 0);
+                        if (!passed) {
+                            growthStepDimNote(b[0], cd, pd);
+                            rolled++;
+                            stop = "维度未递进（" + b[0] + " dim=" + cd + " ≤ 父 dim=" + pd + "），已放弃";
+                            break;   // 树未变，无需落盘
+                        }
+                        childDim = cd;
+                        pcPd = pd;   // 记录父分（addNode 后同步存档）
+                    } catch (Exception de) {
+                        System.out.println("[延伸] 维度打分失败（降级放行）: " + b[0] + " - " + de.getMessage());
+                    }
+                }
                 LinkedHashMap<String, Object> rec = new LinkedHashMap<String, Object>();
                 synchronized (t) {
                     try {
-                        t.tree.addNode(node, b[0], b[1], null);
+                        t.tree.addNode(node, b[0], b[1]);
                     } catch (IllegalArgumentException e) {
                         rolled++;
                         stop = "新分支撞名: " + b[0];
                         break;   // 树未变，无需落盘
                     }
+                    if (childDim != null) t.tree.setDim(b[0], childDim);   // 子维度回存节点（重启回放零模型恢复）
+                    if (pcPd > 0) t.tree.setDim(node, pcPd);   // 父维度同步存档（横向链后续验收基准）
                     rec.put("parent", node);
                     rec.put("name", b[0]);
-                    rec.put("yes", b[1]);
-                    rec.put("no", "");
+                    rec.put("add", b[1]);
                     rec.put("auto", Boolean.TRUE);
                     rec.put("extend", Boolean.TRUE);   // 延伸来源标记：与落兜底生长区分
                     t.grown.add(rec);
@@ -1601,7 +1888,7 @@ public final class SemQuestServer {
                     st.current = "存量重判 " + judged + "/" + plan.affected.size();
                     double prob;
                     try {
-                        prob = t.tree.judgeOne(d[1], b[0], b[1], null, plan.rule);   // 锁外调模型；no=null 由提示词模板自动生成
+                        prob = t.tree.judgeOne(d[1], b[0], b[1], null).prob;   // 锁外调模型；no  不存储、由 no 模板现场推导；迁移重判不带维度题（验收已单独判过）
                     } catch (IOException e) {
                         judged++;   // 单条判定失败视作不过门：留在原位
                         continue;
@@ -1638,11 +1925,34 @@ public final class SemQuestServer {
                 movedAll += movedThis;
                 st.keptBranches = rounds;
                 st.movedDocs = movedAll;
+                // 动作流：本轮收编完成（llm.gen 生成、act.rejudge 逐条重判已分别入流）
+                Map<String, Object> rd = new LinkedHashMap<String, Object>();
+                rd.put("node", node);
+                rd.put("branch", b[0]);
+                rd.put("add", b[1]);
+                if (childDim != null) rd.put("dim", childDim);   // 维度分（0~5 期望值，精确小数）
+                rd.put("round", rounds);
+                rd.put("judged", judged);
+                rd.put("moved", movedThis);
+                Trace.record(t.id, "act.grow-v", "纵向生长轮 " + rounds + " · 收编「" + b[0] + "」（迁入 " + movedThis + " 条）",
+                        rd, null, null, 0, 0, 0);
             }
             st.current = "";
             st.result = stop != null ? stop : ("完成：" + rounds + " 个新枝 · 迁入 " + movedAll + " 条存量");
             st.phase = "done";
             st.finishedAt = System.currentTimeMillis();
+            // 动作流：纵向生长收尾
+            {
+                Map<String, Object> vd = new LinkedHashMap<String, Object>();
+                vd.put("node", node);
+                vd.put("rounds", rounds);
+                vd.put("movedAll", movedAll);
+                vd.put("rolled", rolled);
+                vd.put("stop", stop);
+                Trace.record(t.id, "act.grow-v", "纵向生长结束 @ " + node
+                        + " · " + rounds + " 枝 · 迁入 " + movedAll + " 条" + (stop != null ? "（" + stop + "）" : ""),
+                        vd, null, null, 0, 0, 0);
+            }
         } catch (Exception e) {
             st.phase = "error";
             st.result = e.getMessage() == null ? e.toString() : e.getMessage();
@@ -1709,6 +2019,89 @@ public final class SemQuestServer {
         }
     }
 
+    /**
+     * POST /api/t/&lt;id&gt;/rollback {seq} → 回退到该变更会话开始前的全表状态（仅栈顶快照可回退）：
+     * 零模型恢复 schema+docs+grown+edits，落盘后标记该 trace 会话「已回退」（viz 徽章+按钮消失）。
+     * 快照栈是内存态，重启清空——重启后无可回退点；延伸 running 中拒绝（防写冲突）。
+     */
+    private static final class RollbackHandler extends BaseHandler {
+        private final SwitchableBackend backend;
+
+        RollbackHandler(SwitchableBackend backend) {
+            this.backend = backend;
+        }
+
+        @SuppressWarnings("unchecked")
+        void handle(Table t, HttpExchange ex) throws IOException {
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                ex.sendResponseHeaders(405, -1);
+                return;
+            }
+            Map<String, Object> req;
+            try {
+                req = Json.parseObject(readBody(ex));
+            } catch (Exception e) {
+                json(ex, 400, "{\"error\":" + Json.str("请求体不是合法 JSON") + "}");
+                return;
+            }
+            Object sv = req.get("seq");
+            if (!(sv instanceof Number)) {
+                json(ex, 400, "{\"error\":" + Json.str("缺 seq 会话序号") + "}");
+                return;
+            }
+            long seq = ((Number) sv).longValue();
+            synchronized (t) {
+                if ("running".equals(t.extend.phase)) {
+                    json(ex, 409, "{\"error\":" + Json.str("延伸任务进行中，结束后再回退") + "}");
+                    return;
+                }
+                RollbackSnap top = t.rollbackSnaps.peekLast();
+                if (top == null) {
+                    json(ex, 400, "{\"error\":" + Json.str("无可回退的快照（重启后清空）") + "}");
+                    return;
+                }
+                if (top.seq != seq) {
+                    json(ex, 400, "{\"error\":" + Json.str("只能回退最新一次变更（当前可回退 seq=" + top.seq + "）") + "}");
+                    return;
+                }
+                int docs;
+                try {
+                    Map<String, Object> m = Json.parseObject(top.json);
+                    Map<String, Object> schema = (Map<String, Object>) m.get("schema");
+                    SemQuestTree fresh = SemQuestTree.fromMap(schema, backend);
+                    // 挂回落位正文（grown/edits 回放传空收集器丢弃——schema 已含节点时回放会跳过收集）；
+                    // grown/edits 日志直接从快照深拷贝恢复，保住历史来源标记不被回退抹掉
+                    docs = replayTableData(fresh, m, new ArrayList<Map<String, Object>>(), new ArrayList<Map<String, Object>>());
+                    List<Map<String, Object>> grown = m.get("grown") instanceof List
+                            ? (List<Map<String, Object>>) m.get("grown") : new ArrayList<Map<String, Object>>();
+                    List<Map<String, Object>> edits = m.get("edits") instanceof List
+                            ? (List<Map<String, Object>>) m.get("edits") : new ArrayList<Map<String, Object>>();
+                    t.tree = fresh;
+                    t.grown.clear();
+                    t.grown.addAll(grown);
+                    t.edits.clear();
+                    t.edits.addAll(edits);
+                    persistTable(t);
+                } catch (Exception e) {
+                    json(ex, 500, "{\"error\":" + Json.str("恢复快照失败: " + e.getMessage()) + "}");
+                    return;
+                }
+                t.rollbackSnaps.pollLast();   // 弹出即防重：同一快照不可二次回退
+                Trace.markRolledBackBySeq(seq);
+                Map<String, Object> rd = new LinkedHashMap<String, Object>();
+                rd.put("seq", seq);
+                rd.put("docs", docs);
+                Trace.record(t.id, "act.rollback", "回退完成 · 恢复到会话 " + seq + " 之前的状态", rd, null, null, 0, 0, 0);
+                System.out.println("[回退] 表「" + t.name + "」恢复到会话 " + seq + " 之前的状态（落位 " + docs + " 条）");
+                LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+                out.put("ok", true);
+                out.put("seq", seq);
+                out.put("docs", docs);
+                json(ex, 200, Json.write(out));
+            }
+        }
+    }
+
     /** POST /api/t/&lt;id&gt;/add {content, id?} → 一条语料按判据下行落叶；id 缺省自动生成，落位随快照落盘。 */
     private static final class AddHandler extends BaseHandler {
         private final Config cfg;
@@ -1747,6 +2140,12 @@ public final class SemQuestServer {
                 out.put("id", id);
                 out.put("leaves", new ArrayList<Object>(rep.leaves));
                 out.put("steps", stepsJson(rep.steps));
+                // 动作流：落位事件（leaves/steps 概括；若触发横向生长，后续事件依次跟随）
+                Map<String, Object> ad = new LinkedHashMap<String, Object>();
+                ad.put("docId", id);
+                ad.put("leaves", rep.leaves);
+                ad.put("steps", stepsJson(rep.steps));
+                Trace.record(t.id, "act.add", "落位 → " + String.join("、", rep.leaves), ad, null, null, 0, 0, 0);
                 // 数据驱动生长：落位全为兜底叶（或空树根叶）→ 树里没有能承接这条内容的类别，
                 // 同步生成判据长新枝并收编本条（成功后 out.leaves 换为新枝、挂 growthStep）
                 growOnFallback(t, id, ((String) cv).trim(), rep, out, cfg, backend, gstate);
@@ -1755,6 +2154,11 @@ public final class SemQuestServer {
                 persistTable(t);
                 json(ex, 200, Json.write(out));
             } catch (IOException e) {
+                // 动作流：落位失败（决策调用异常已记 llm.decision 失败事件，这里补动作级结果）
+                Map<String, Object> ad = new LinkedHashMap<String, Object>();
+                ad.put("docId", id);
+                ad.put("error", String.valueOf(e.getMessage()));
+                Trace.record(t.id, "act.add", "落位失败 · " + id, ad, null, null, 0, 0, 0);
                 json(ex, 502, "{\"error\":" + Json.str("落位失败: " + e.getMessage()) + "}");
             }
         }
@@ -1910,6 +2314,7 @@ public final class SemQuestServer {
             // doc 直取：query 为 doc id 或 doc 原文（trim 精确一致）→ 直接返回该 doc 的落位（零模型调用）
             try {
                 json(ex, 200, Json.write(docQuestMap(t.tree.locateDocs(query), query)));
+                traceQuest(t, query, "doc 直取（零模型）", null);
                 return;
             } catch (IllegalArgumentException notDoc) {
                 // 非 doc id/原文 → 节点名直取 / 自然语言检索
@@ -1917,6 +2322,7 @@ public final class SemQuestServer {
             // 节点名直取：查询与节点名完全一致 → 直接返回该节点子树内容（零模型调用，复用节点直取逻辑）
             try {
                 json(ex, 200, Json.write(nodeQuestMap(t.tree.nodeDocs(query))));
+                traceQuest(t, query, "节点直取（零模型）", null);
                 return;
             } catch (IllegalArgumentException notNode) {
                 // 非节点名 → 走自然语言检索
@@ -1926,9 +2332,116 @@ public final class SemQuestServer {
                 Map<String, Object> out = questMap(t.tree, rep);
                 // 纯读：检索只按现有结构下行，查不到就是查不到——不为查询改树（生长在 add/addBatch 触发）
                 json(ex, 200, Json.write(out));
+                traceQuest(t, query, "自然语言检索", out);
             } catch (IOException e) {
+                // 动作流：检索失败（决策调用异常已记 llm.decision 失败事件，这里补动作级结果）
+                Map<String, Object> qd = new LinkedHashMap<String, Object>();
+                qd.put("query", query);
+                qd.put("error", String.valueOf(e.getMessage()));
+                Trace.record(t.id, "act.quest", "检索失败", qd, null, null, 0, 0, 0);
                 json(ex, 500, "{\"error\":" + Json.str("查询判定失败: " + e.getMessage()) + "}");
             }
+        }
+    }
+
+    /** 动作流：检索事件（act.quest）——路径与命中叶概括，query 截断防单条过大。 */
+    private static void traceQuest(Table t, String query, String path, Map<String, Object> out) {
+        Map<String, Object> qd = new LinkedHashMap<String, Object>();
+        qd.put("query", query.length() > 120 ? query.substring(0, 120) + "…" : query);
+        qd.put("path", path);
+        if (out != null) {
+            qd.put("matchedLeaves", out.get("matchedLeaves"));
+        }
+        Trace.record(t.id, "act.quest", "检索（" + path + "）", qd, null, null, 0, 0, 0);
+    }
+
+    /**
+     * GET /api/t/&lt;id&gt;/trace?since=N → 增量动作流（seq &gt; N 且属于该表的事件，旧→新）；
+     * since 缺省取 0（最近 CAP 条全量）。响应 {enabled, maxSeq, events:[…]}——
+     * enabled 供 viz 开关状态对齐（全局内存态，重启回关）。
+     */
+    private static final class TraceHandler extends BaseHandler {
+
+        void handle(Table t, HttpExchange ex) throws IOException {
+            if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                ex.sendResponseHeaders(405, -1);
+                return;
+            }
+            long since = 0;
+            String s = param(ex, "since");
+            if (s != null && !s.trim().isEmpty()) {
+                try {
+                    since = Long.parseLong(s.trim());
+                } catch (NumberFormatException ignore) {
+                    // 非法游标按 0 处理（全量）
+                }
+            }
+            List<Map<String, Object>> events = new ArrayList<Map<String, Object>>();
+            for (Trace.Event e : Trace.since(t.id, since)) {
+                events.add(e.toMap());
+            }
+            LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+            out.put("enabled", Trace.isEnabled());
+            out.put("maxSeq", Trace.maxSeq());
+            out.put("events", events);
+            json(ex, 200, Json.write(out));
+        }
+    }
+
+    /**
+     * GET /api/trace → 全局追踪开关状态 + 按请求分组的动作流会话列表（内存索引 + traces/ 存档
+     * 归并，旧→新；会话元数据不含事件体）；GET /api/trace?file=xxx → 单开一个会话的完整动作流
+     * （重启后仍可从存档读回）；POST {enabled} → 开/关（内存态，重启回关，已落盘会话保留）。
+     * 开启后：每次 add/addBatch/quest/extend 请求产生一个独立会话，结束时整段写入 traces/ 目录
+     * 下独立 JSON 文件（一请求一文件）。
+     */
+    private static final class TraceToggleHandler extends BaseHandler implements HttpHandler {
+
+        public void handle(HttpExchange ex) throws IOException {
+            if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                String file = param(ex, "file");
+                if (file != null && !file.trim().isEmpty()) {
+                    Map<String, Object> s = Trace.readSession(file.trim());
+                    if (s == null) {
+                        json(ex, 404, "{\"error\":" + Json.str("会话不存在: " + file.trim()) + "}");
+                    } else {
+                        json(ex, 200, Json.write(s));
+                    }
+                    return;
+                }
+                LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+                out.put("enabled", Trace.isEnabled());
+                out.put("maxSeq", Trace.maxSeq());
+                List<Object> sess = new ArrayList<Object>();
+                java.util.HashSet<String> have = new java.util.HashSet<String>();
+                for (Trace.Session s : Trace.sessions()) {
+                    sess.add(s.metaMap());
+                    if (s.file != null) have.add(s.file);
+                }
+                for (Map<String, Object> m : Trace.archivedSessions()) {
+                    if (!have.contains(String.valueOf(m.get("file")))) sess.add(m);   // 内存已有则不重复
+                }
+                out.put("sessions", sess);
+                json(ex, 200, Json.write(out));
+                return;
+            }
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                ex.sendResponseHeaders(405, -1);
+                return;
+            }
+            boolean enabled;
+            try {
+                Object v = Json.parseObject(readBody(ex)).get("enabled");
+                enabled = Boolean.TRUE.equals(v) || "true".equals(v);
+            } catch (Exception e) {
+                json(ex, 400, "{\"error\":" + Json.str("请求体不是合法 JSON") + "}");
+                return;
+            }
+            Trace.setEnabled(enabled);
+            LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+            out.put("enabled", Trace.isEnabled());
+            out.put("maxSeq", Trace.maxSeq());
+            json(ex, 200, Json.write(out));
         }
     }
 
@@ -2214,6 +2727,10 @@ public final class SemQuestServer {
         df.put("calls", rep.docFilterCalls);           // 过滤判定批次数
         df.put("confirmRequired", rep.confirmRequired); // true=总量超上限且未确认：ranked 为未过滤全量，带 confirm=true 重发执行
         out.put("docFilter", df);
+        if (rep.catScopeNode != null) {
+            out.put("catScope", rep.catScopeNode);       // 类目意图命中节点（null=未命中，正常下行）
+            out.put("catScopeDocs", rep.catScopeDocs);   // 命中节点子树全量 doc 数（未过滤直接全量返回）
+        }
         out.put("steps", questStepsJson(tree, rep.steps, contents));
         out.put("stats", tree.statsLine());
         return out;

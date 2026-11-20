@@ -26,11 +26,13 @@ import java.util.Map;
  *
  * <p>层级分支由 schema JSON 预制（类似 MySQL 建表的字段声明）。
  * 判据语言随子树：节点可自带 ruleAdd/ruleSearch 覆盖本子树的规则文本，缺省继承全局；
- * 判据为事件级原子断言，yes = "是"侧断言，no = "否"侧断言（双边判据方言）。
+ * 节点只存单份属性解释（add 字段，语义域的抽象描述句），判定时由两侧模板各投影一次：
+ * add 判据（内容与该含义是否有关，落位门控）与 search 判据（查询与该抽象哪怕一丝关联，检索门控）；
+ * no 判据由 no 模板现场推导（"并非…"），不存储。双门控分离：addGate 从严、questGate 从松。
  * 兜底叶不设判据（choice 以 prompt.choice.other 提示词文件文案作其选项描述）。
  *
  * <pre>
- *   SemQuestTree tree = SemQuestTree.load(Path.of("driver-intent-schema.json"), new JevBackend(cfg, 30000), 0.7);
+ *   SemQuestTree tree = SemQuestTree.load(Path.of("driver-intent-schema.json"), new JevBackend(cfg, 30000), 0.5, 0.3);
  *   AddReport  a = tree.add("T-0317", "This order only pays 1,200… bump it to 1,500, or I'll only load 8 tons… don't blame me when the delivery runs late.");
  *   QuestReport q = tree.quest("Find drivers who ask for a higher rate and also want to load less.");
  * </pre>
@@ -46,16 +48,18 @@ public final class SemQuestTree {
     // ── 判定提示词（系统侧组装文案，semquest.properties 热载）───────
 
     /**
-     * 系统侧判定提示词：结构化判定方言里由服务组装的文案。判据 yes/no 与规则文本归树（节点数据），不在这里。
-     * 占位符：{name}=分支名、{node}=层节点名、{yes}=判据原文。全部字段必填（null/空白即抛
+     * 系统侧判定提示词：结构化判定方言里由服务组装的文案。判据属性解释与规则文本归树（节点数据），不在这里。
+     * 占位符：{name}=分支名、{node}=层节点名、{add}=节点属性解释（包裹后判据文本）。全部字段必填（null/空白即抛
      * IllegalArgumentException）——正文一律来自 semquest.properties 的 prompt.* 键指向的提示词文件
      * （PromptLoader 装载），代码零内置文本、零默认回退。
      * 必列键：prompt.rule.{add,search}、prompt.noul.add.instructions、prompt.noul.add.criterion、
      * prompt.noul.search.criterion、prompt.noul.search.query、prompt.choice.{add.root,add.node,other}、
      * prompt.noul.no.{han,latin}；另 3 个可选分野键（prompt.noul.search.instructions、
      * prompt.choice.search.{root,node}）未配置即继承 add 侧同键（PromptLoader 解析）。
-     * criterion 在判定前包裹判据文本（落位侧恒等 {yes} 写死；检索侧默认包关联性框架：查的是「查询与该类内容的关联性」，
-     * 不是把查询归类——add 归类、search 求关联，两侧语义分野）；questQuery
+     * 判据本体是节点上的单份属性解释，判定前由两侧模板各投影一次：落位侧 addCriterion（add 判据：内容与该含义是否有关）、
+     * 检索侧 searchCriterion（search 判据：查询与该抽象哪怕一丝关联）——add 归类、search 求关联，两侧语义分野由模板措辞保证；
+     * no 判据由 prompt.noul.no.{han,latin} 模板对包裹后判据现场推导（"并非…"），节点不存储 no 侧文本。
+     * questQuery
      * 包裹检索请求原文（{query}=查询原文）——两侧框架配套，给判据框架里的「该查询」提供指代源，
      * 使「所有悲伤的话」这类泛查询能过机制描述型判据——框架落在模型真正读的字段里。
      * 两对框架 noul 与 choice 检索共用（choice 的 content=questQuery 包裹、选项描述=criterion 检索框架）。
@@ -66,9 +70,10 @@ public final class SemQuestTree {
         /** noul 题目 instructions 模板（{name}=分支名）。 */
         public final String noulAddInstructions;
         public final String noulSearchInstructions;
-        /** noul 判据包裹模板（{yes}=判据原文、{name}=分支名）：落位侧 addCriterion（默认恒等）、检索侧 searchCriterion。 */
+        /** noul 判据包裹模板（{add}=属性解释、{name}=分支名）：落位侧 addCriterion（add 判据模板）、检索侧 searchCriterion（search 判据模板）。
+         *  判据本体是单份属性解释，两侧模板各投影一次——add 侧正常判定姿态，search 侧卑微姿态（沾边即算）；no 判据由 no 模板对包裹后判据现场推导。 */
         public final String noulSearchCriterion;
-        /** noul 落位判据包裹模板（{yes}=判据原文、{name}=分支名）：判据=类别含义，落位时把含义转成判定任务；默认恒等 {yes}，choice 落位不套用。 */
+        /** noul 落位判据包裹模板（{add}=属性解释、{name}=分支名）：把属性解释转成落位判定任务；choice 落位不套用。 */
         public final String noulAddCriterion;
         /** 检索请求包裹模板（{query}=查询原文；noul 与 choice 检索共用）：给 criterion 检索框架里的「该查询」提供指代源。 */
         public final String noulSearchQuery;
@@ -80,24 +85,35 @@ public final class SemQuestTree {
         public final String choiceSearchNode;
         /** choice 兜底选项描述（criteria 里 X_OTHER 的文案）。 */
         public final String choiceOtherOption;
-        /** no 侧自动生成模板（{yes}=判据原文；NoulSpec.autoNo 用）：noulNoHan=判据含汉字时、noulNoLatin=纯西文时。 */
+        /** no 侧自动生成模板（{add}=包裹后判据文本；NoulSpec.autoNo 用）：noulNoHan=判据含汉字时、noulNoLatin=纯西文时。 */
         public final String noulNoHan;
         public final String noulNoLatin;
 
         public final String docFilterCriterion;
+
+        /** 类目意图题模板（{query}=检索原文、{criterion}=节点属性解释；prompt.quest.catscope 文件内容；null=禁用）。 */
+        public final String catScopeCriterion;
+
+        /** 维度题模板（首行=instructions 含 {judge}=判据文本，后续 6 行=六档 criteria 选项描述；
+         * growth.dim.question 文件内容，必配）。 */
+        public final String dimTemplate;
 
         /**
          * 全字段必填（来自提示词文件内容，分野键继承已由 PromptLoader 完成）。
          * @param noulNoHan   no 侧模板（判据含汉字时；prompt.noul.no.han 文件内容）
          * @param noulNoLatin no 侧模板（纯西文判据时；prompt.noul.no.latin 文件内容）
          * @param docFilterCriterion doc 过滤判据模板（prompt.docfilter.criterion 文件内容；null=禁用 doc 过滤）
+         * @param catScopeCriterion 类目意图题模板（prompt.quest.catscope 文件内容；null=禁用类目截断）
+         * @param dimTemplate 维度题模板（growth.dim.question 文件内容；首行 instructions、后续 6 行档位描述，
+         *                    score 题六档各一选项一次打分，响应期望分即维度分；不传父节点/递进约束，
+         *                    child > parent 由调用方比较）
          */
         public Prompts(String noulAddInstructions, String noulSearchInstructions,
                        String noulSearchCriterion, String noulAddCriterion, String noulSearchQuery,
                        String choiceAddRoot, String choiceAddNode,
                        String choiceSearchRoot, String choiceSearchNode,
                        String choiceOtherOption, String noulNoHan, String noulNoLatin,
-                       String docFilterCriterion) {
+                       String docFilterCriterion, String dimTemplate, String catScopeCriterion) {
             this.noulAddInstructions = req(noulAddInstructions, "prompt.noul.add.instructions");
             this.noulSearchInstructions = req(noulSearchInstructions, "prompt.noul.search.instructions");
             this.noulSearchCriterion = req(noulSearchCriterion, "prompt.noul.search.criterion");
@@ -112,6 +128,16 @@ public final class SemQuestTree {
             this.noulNoLatin = req(noulNoLatin, "prompt.noul.no.latin");
             this.docFilterCriterion = docFilterCriterion == null || docFilterCriterion.trim().isEmpty()
                     ? null : docFilterCriterion.trim();
+            this.catScopeCriterion = catScopeCriterion == null || catScopeCriterion.trim().isEmpty()
+                    ? null : catScopeCriterion.trim();
+            this.dimTemplate = req(dimTemplate, "growth.dim.question");
+        }
+
+        /** 类目意图题（{query}=检索原文、{criterion}=节点属性解释包裹进题面）；模板未配置时调用方不应发起题。 */
+        public String catScopeCriterion(String query, String criterion) {
+            return catScopeCriterion
+                    .replace("{query}", query == null ? "" : query)
+                    .replace("{criterion}", criterion == null ? "" : criterion);
         }
 
         /** 单字段严格校验：代码零内置文本，任一提示词缺失即拒绝构造。 */
@@ -127,15 +153,25 @@ public final class SemQuestTree {
             return tpl.replace("{name}", name);
         }
 
-        /** noul 落位判据包裹：判据=类别含义，落位时把含义转成判定任务（{yes}/{name} 可用；默认恒等 {yes}；choice 不套用）。 */
-        public String addCriterion(String yes, String name) {
-            return noulAddCriterion.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
+        /** noul 落位判据包裹：属性解释 → add 判据任务（{add}/{name} 可用；choice 不套用）。 */
+        public String addCriterion(String add, String name) {
+            return noulAddCriterion.replace("{add}", add == null ? "" : add).replace("{name}", name);
         }
 
-        /** 判据文本（choice 选项共用）：落位侧恒等判据原文直下；检索侧包检索框架（{yes}/{name} 替换）。 */
-        public String criterion(Task task, String yes, String name) {
-            if (task == Task.ADD) return yes == null ? "" : yes;
-            return noulSearchCriterion.replace("{yes}", yes == null ? "" : yes).replace("{name}", name);
+        /** 存量重判判据包裹：addCriterion 模板中的「这条内容」替换为「」框起来的被判内容原文
+         * （重判请求无 state，rule/content 均省略，内容随题走）；模板无该短语时内容前置。 */
+        public String rejudgeCriterion(String add, String name, String content) {
+            String base = addCriterion(add, name);
+            String c = content == null ? "" : content.trim();
+            String wrapped = "「" + c + "」";
+            int at = base.indexOf("这条内容");
+            return at < 0 ? wrapped + base : base.substring(0, at) + wrapped + base.substring(at + "这条内容".length());
+        }
+
+        /** 判据文本（choice 选项共用）：落位侧恒等属性解释直下；检索侧包 search 判据模板（{add}/{name} 替换）。 */
+        public String criterion(Task task, String add, String name) {
+            if (task == Task.ADD) return add == null ? "" : add;
+            return noulSearchCriterion.replace("{add}", add == null ? "" : add).replace("{name}", name);
         }
 
         /** 检索请求文本：包裹模板 {query} 替换查询原文（仅检索侧，add 内容原文直下；noul 与 choice 共用）。 */
@@ -155,6 +191,28 @@ public final class SemQuestTree {
             return tpl.replace("{node}", node);
         }
 
+        /**
+         * 维度 score 题组装：首行为题目指令（{judge} 替换判据文本），后续 6 行为六档选项描述（criteria 数组，
+         * 索引即档位值）——一道 score 题六档各打分，响应期望分即维度分（方向一致：分数越高粒度越细）。
+         */
+        public NoulSpec dimSpec(String judge) {
+            String j = judge == null ? "" : judge.trim();
+            List<String> criteria = dimCriteria();
+            return NoulSpec.score(dimTemplate.split("\n", 2)[0].replace("{judge}", j), criteria);
+        }
+
+        /** 维度题六档选项描述（模板非首行部分），须恰好 6 行（索引=档位值 0~5）。 */
+        public List<String> dimCriteria() {
+            List<String> out = new ArrayList<String>();
+            String[] lines = dimTemplate.split("\n");
+            for (int i = 1; i < lines.length; i++) {
+                if (!lines[i].trim().isEmpty()) out.add(lines[i].trim());
+            }
+            if (out.size() != 6)
+                throw new IllegalArgumentException("growth.dim.question 须首行 instructions + 6 行档位描述，当前描述 " + out.size() + " 行");
+            return out;
+        }
+
         @Override
         public boolean equals(Object o) {
             if (!(o instanceof Prompts)) return false;
@@ -172,7 +230,10 @@ public final class SemQuestTree {
                     && noulNoHan.equals(p.noulNoHan)
                     && noulNoLatin.equals(p.noulNoLatin)
                     && (docFilterCriterion == null ? p.docFilterCriterion == null
-                        : docFilterCriterion.equals(p.docFilterCriterion));
+                        : docFilterCriterion.equals(p.docFilterCriterion))
+                    && (catScopeCriterion == null ? p.catScopeCriterion == null
+                        : catScopeCriterion.equals(p.catScopeCriterion))
+                    && dimTemplate.equals(p.dimTemplate);
         }
 
         @Override
@@ -189,7 +250,8 @@ public final class SemQuestTree {
             h = h * 31 + choiceOtherOption.hashCode();
             h = h * 31 + noulNoHan.hashCode();
             h = h * 31 + noulNoLatin.hashCode();
-            return h * 31 + (docFilterCriterion == null ? 0 : docFilterCriterion.hashCode());
+            return h * 31 + (docFilterCriterion == null ? 0 : docFilterCriterion.hashCode()) * 31
+                    + (catScopeCriterion == null ? 0 : catScopeCriterion.hashCode());
         }
     }
 
@@ -220,8 +282,10 @@ public final class SemQuestTree {
     /** 树节点：children 为空即叶（叶挂 Doc 指针）；internal 懒挂一个兜底叶。 */
     public static final class SemNode {
         public String name;           // 非 final：右键「修改节点」可改名（连带兜底叶与落位指针）
-        public String yes;            // "是"侧原子断言（在父层被提问）；可经修改节点更新
-        public String no;             // "否"侧断言；可经修改节点更新
+        public String add;            // 属性解释：该节点语义域的抽象描述句（add/search 双模板投影的本体；
+                                      // 判定时由模板包裹成 add 判据与 search 判据，no 判据由 no 模板现场推导——不存储）
+        public double dim;            // 维度分 0~5（0=未评）：判据的语义粒度，越低越宽泛越高越细致；
+                                      // 生长验收时由维度打分写入，硬约束：子节点维度 > 父节点维度
         public final boolean other;   // 是否兜底叶
         public final String ruleAdd;    // 子树规则覆盖（如中文子树四层全中文）；null 继承上层规则
         public final String ruleSearch;
@@ -229,15 +293,14 @@ public final class SemQuestTree {
         public final List<Doc> docs = new ArrayList<Doc>();   // 仅叶使用
         private SemNode otherLeaf;                            // 仅内部节点懒创建
 
-        SemNode(String name, String yes, String no, boolean other, List<SemNode> children) {
-            this(name, yes, no, other, children, null, null);
+        SemNode(String name, String add, boolean other, List<SemNode> children) {
+            this(name, add, other, children, null, null);
         }
 
-        SemNode(String name, String yes, String no, boolean other, List<SemNode> children,
+        SemNode(String name, String add, boolean other, List<SemNode> children,
                 String ruleAdd, String ruleSearch) {
             this.name = name;
-            this.yes = yes;
-            this.no = no;
+            this.add = add;
             this.other = other;
             this.children = children;
             this.ruleAdd = ruleAdd;
@@ -310,6 +373,10 @@ public final class SemQuestTree {
         public int docFilterTotal = 0;
         public int docFilterKept = 0;
         public int docFilterCalls = 0;
+        // 类目意图命中：catScopeNode=命中节点名（null=未命中，正常下行）；catScopeDocs=该节点子树全量 doc 数。
+        // 命中时 matched 即子树全部真实叶（含兜底叶），docFilter 跳过——内容全量直接返回
+        public String catScopeNode = null;
+        public int catScopeDocs = 0;
 
         QuestReport(String query) {
             this.query = query;
@@ -335,9 +402,14 @@ public final class SemQuestTree {
 
     private final SemNode root;
     private final DecisionBackend backend;
-    private volatile double gate;
+    /** 落位门控（add 侧）：判据为正常判定姿态（内容与属性解释是否有关），门槛从严。 */
+    private volatile double addGate;
+    /** 检索门控（search 侧）：判据为卑微姿态（查询与属性解释哪怕一丝关联），门槛从松——宽进由 docFilter 细筛补齐。 */
+    private volatile double questGate;
     /** choice 模式采纳线（SDK 官方语义：confidence ≥ 采纳线才认选中项，否则落兜底）。 */
     private volatile double choiceGate;
+    /** 动作流归属表 id（viz 🔎 追踪按表过滤；Table 创建时回填，CLI/Demo 下为 null 不过滤）。 */
+    private volatile String traceTag;
     /** true = choice 单选路由树（每层一题归一化选一支）；false = noul 多选树（默认）。 */
     private final boolean choiceMode;
     // 树级规则非 final：prompt.rule.* 热载可置换仍等于旧默认文本的表（自定义文本不动）
@@ -364,18 +436,27 @@ public final class SemQuestTree {
     private volatile int docFilterBatch = 20;          // 单次打包判定条数
     private volatile double docFilterGate = 0.6;       // P(相关) 采纳线
     private volatile int docFilterMaxLen = 200;        // 判据里 doc 原文截断上限
-    private volatile int docFilterMaxDocs = 100;       // 单次 quest 待过滤总量上限（跨命中叶去重；超过需 confirm 确认）
+    private volatile int docFilterMaxDocs = 100;       // 单次 quest 待过滤 总量上限（跨命中叶去重；超过需 confirm 确认）
 
-    private SemQuestTree(SemNode root, DecisionBackend backend, double gate,
-                         String ruleAdd, String ruleSearch) {
-        this(root, backend, gate, ruleAdd, ruleSearch, false, 0.6d);
+    // ── 类目意图截断（quest cat-scope）：每层每个子节点双题同请求（关系+完全包含），yes 直接收编子树 ──
+    /** 完全包含判定题 key 前缀（__cat.<子节点名>）；同请求多题区分，响应 probs 里按前缀取回。 */
+    private static final String CAT_PREFIX = "__cat.";
+    private volatile boolean catScopeOn = false;
+    private volatile double questCatGate = 0.85d;      // 类目意图采纳线（宁缺勿滥：假阳性代价是返回全子树）
+    private volatile int catScopeMaxDocs = 200;        // 类目命中子树 doc 数上限：超过需 confirm 确认后才全量返回
+
+    private SemQuestTree(SemNode root, DecisionBackend backend, double addGate,
+                         double questGate, String ruleAdd, String ruleSearch) {
+        this(root, backend, addGate, questGate, ruleAdd, ruleSearch, false, 0.6d);
     }
 
-    private SemQuestTree(SemNode root, DecisionBackend backend, double gate,
-                         String ruleAdd, String ruleSearch, boolean choiceMode, double choiceGate) {
+    private SemQuestTree(SemNode root, DecisionBackend backend, double addGate,
+                         double questGate, String ruleAdd, String ruleSearch,
+                         boolean choiceMode, double choiceGate) {
         this.root = root;
         this.backend = backend;
-        this.gate = gate;
+        this.addGate = addGate;
+        this.questGate = questGate;
         this.choiceGate = choiceGate;
         this.choiceMode = choiceMode;
         this.ruleAdd = ruleAdd;
@@ -385,28 +466,34 @@ public final class SemQuestTree {
     // ── schema 装载 ─────────────────────────────────────────────────
 
     /**
-     * 从 schema JSON 装载预制树。字段：mode("noul"|"choice") / gate / choiceGate / ruleAdd / ruleSearch /
-     * root{name, children:[{name, yes, no, ruleAdd?, ruleSearch?, children:[…]}]}——children 缺省即叶；
+     * 从 schema JSON 装载预制树。字段：mode("noul"|"choice") / addGate / questGate / choiceGate / ruleAdd / ruleSearch /
+     * root{name, children:[{name, add, dim?, ruleAdd?, ruleSearch?, children:[…]}]}——children 缺省即叶；
      * 节点可选自带 ruleAdd/ruleSearch 覆盖本子树的规则文本（如中文子树四层全中文），缺省继承全局。
+     * 兼容旧键：节点 add 回退读 yes；树级 addGate 回退读 noulGate / gate（questGate 缺省继承 addGate）。
      * 兜底叶由系统懒创建；noul 模式不参与判定请求，choice 模式作为显式选项参与。
      */
-    public static SemQuestTree load(Path schemaFile, DecisionBackend backend, double gateDefault)
+    public static SemQuestTree load(Path schemaFile, DecisionBackend backend, double addGateDefault,
+                                    double questGateDefault)
             throws IOException {
         Map<String, Object> m = Json.parseObject(
                 new String(Files.readAllBytes(schemaFile), Charset.forName("UTF-8")));
-        return fromMap(m, backend, gateDefault, schemaFile.toString());
+        return fromMap(m, backend, addGateDefault, questGateDefault, schemaFile.toString());
     }
 
     /** 从表文件内嵌的 schema Map 装载（多表持久化用）。 */
     public static SemQuestTree fromMap(Map<String, Object> m, DecisionBackend backend) throws IOException {
-        return fromMap(m, backend, 0.7d, "(table)");
+        return fromMap(m, backend, 0.7d, 0.3d, "(table)");
     }
 
     private static SemQuestTree fromMap(Map<String, Object> m, DecisionBackend backend,
-                                        double gateDefault, String source) throws IOException {
-        // noulGate 新键；gate 为改名前旧表文件的兼容回退
-        double gate = m.get("noulGate") instanceof Number ? ((Number) m.get("noulGate")).doubleValue()
-                : (m.get("gate") instanceof Number ? ((Number) m.get("gate")).doubleValue() : gateDefault);
+                                        double addGateDefault, double questGateDefault,
+                                        String source) throws IOException {
+        // addGate 新键；noulGate / gate 为改名前旧表文件的兼容回退
+        double addGate = m.get("addGate") instanceof Number ? ((Number) m.get("addGate")).doubleValue()
+                : (m.get("noulGate") instanceof Number ? ((Number) m.get("noulGate")).doubleValue()
+                : (m.get("gate") instanceof Number ? ((Number) m.get("gate")).doubleValue() : addGateDefault));
+        // questGate 新键；缺省继承 addGate（旧表单门控语义：两侧同门槛）
+        double questGate = m.get("questGate") instanceof Number ? ((Number) m.get("questGate")).doubleValue() : addGate;
         double choiceGate = m.get("choiceGate") instanceof Number ? ((Number) m.get("choiceGate")).doubleValue() : 0.6d;
         String ruleAdd = optText(m, "ruleAdd");      // null 合法：建表时由 server 显式传入规则文件内容，schema 可选自带覆盖
         String ruleSearch = optText(m, "ruleSearch");
@@ -415,23 +502,26 @@ public final class SemQuestTree {
         }
         SemNode root = parseNode((Map<?, ?>) m.get("root"));
         boolean choice = "choice".equals(m.get("mode"));
-        return new SemQuestTree(root, backend, gate, ruleAdd, ruleSearch, choice, choiceGate);
+        return new SemQuestTree(root, backend, addGate, questGate, ruleAdd, ruleSearch, choice, choiceGate);
     }
 
     /** 新建空表树：只有 ROOT 节点（建树用右键加节点；choice 模式加子节点=加选项）。 */
     public static SemQuestTree createEmpty(DecisionBackend backend, boolean choiceMode,
-                                           double gate, double choiceGate, String ruleAdd, String ruleSearch) {
-        SemNode root = new SemNode("ROOT", null, null, false, new ArrayList<SemNode>(),
+                                           double addGate, double questGate, double choiceGate,
+                                           String ruleAdd, String ruleSearch) {
+        SemNode root = new SemNode("ROOT", null, false, new ArrayList<SemNode>(),
                 null, null);
-        return new SemQuestTree(root, backend, gate, ruleAdd, ruleSearch, choiceMode, choiceGate);
+        return new SemQuestTree(root, backend, addGate, questGate, ruleAdd, ruleSearch, choiceMode, choiceGate);
     }
 
     @SuppressWarnings("unchecked")
     private static SemNode parseNode(Map<?, ?> m) {
         String name = (String) m.get("name");
         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("schema 节点缺 name");
-        String yes = m.get("yes") instanceof String ? (String) m.get("yes") : null;
-        String no = m.get("no") instanceof String ? (String) m.get("no") : null;
+        // add = 属性解释（判据本体）；旧表文件兼容回退读 yes。no 侧不存储——判定时由 no 模板现场推导
+        String add = m.get("add") instanceof String ? (String) m.get("add")
+                : (m.get("yes") instanceof String ? (String) m.get("yes") : null);
+        double dim = m.get("dim") instanceof Number ? ((Number) m.get("dim")).doubleValue() : 0.0d;
         String ruleAdd = optText(m, "ruleAdd");
         String ruleSearch = optText(m, "ruleSearch");
         List<SemNode> children = new ArrayList<SemNode>();
@@ -440,7 +530,8 @@ public final class SemQuestTree {
                 if (o instanceof Map) children.add(parseNode((Map<?, ?>) o));
             }
         }
-        SemNode node = new SemNode(name, yes, no, false, children, ruleAdd, ruleSearch);
+        SemNode node = new SemNode(name, add, false, children, ruleAdd, ruleSearch);
+        node.dim = dim;
         return node;
     }
 
@@ -496,15 +587,17 @@ public final class SemQuestTree {
         final String effRule = node.ruleAdd != null ? node.ruleAdd : rule;   // 子树规则覆盖
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
         for (SemNode c : node.children) {
-            qs.put(c.name, new NoulSpec(ps.noulInstructions(Task.ADD, c.name), ps.addCriterion(c.yes, c.name), c.no, ps.noulNoHan, ps.noulNoLatin));
+            // add 判据 = addCriterion 模板包裹属性解释；no 判据由 no 模板对裸属性解释现场推导（不存储）
+            qs.put(c.name, new NoulSpec(ps.noulInstructions(Task.ADD, c.name), ps.addCriterion(c.add, c.name),
+                    c.add, ps.noulNoHan, ps.noulNoLatin));
         }
         // 兜底叶不进请求
-        NoulReply r = ask(node.name, content, effRule, qs, rep.steps);
+        NoulReply r = ask("add", node.name, content, effRule, qs, rep.steps);
 
         List<SemNode> passing = new ArrayList<SemNode>();
         for (SemNode c : node.children) {
             Double p = r.probs.get(c.name);
-            if (p != null && p >= gate) passing.add(c);
+            if (p != null && p >= addGate) passing.add(c);
         }
         if (passing.isEmpty()) {
             SemNode other = otherLeaf(node);   // 兜底：本层无真实判据过门 → 落「都不相关」叶
@@ -561,15 +654,35 @@ public final class SemQuestTree {
         final Prompts ps = promptsOrThrow();
         LinkedHashMap<String, String> criteria = new LinkedHashMap<String, String>();
         for (SemNode c : node.children) {
-            // 判据按任务侧别包裹（与 noul 共用 criterion 模板）：检索侧包检索框架给「该查询」落点，落位侧恒等原文
-            String yes = c.yes != null && !c.yes.trim().isEmpty() ? c.yes : c.name;
-            criteria.put(c.name, ps.criterion(task, yes, c.name));
+            // 判据按任务侧别包裹（与 noul 共用 criterion 模板）：检索侧包 search 判据模板给「该查询」落点，落位侧恒等属性解释
+            String add = c.add != null && !c.add.trim().isEmpty() ? c.add : c.name;
+            criteria.put(c.name, ps.criterion(task, add, c.name));
         }
         SemNode other = otherLeaf(node);
         criteria.put(other.name, ps.choiceOtherOption);
 
         String question = ps.choiceQuestion(task, node.name);
-        NoulReply r = backend.choice(content, rule, question, criteria);
+        long t0 = System.currentTimeMillis();
+        NoulReply r;
+        try {
+            r = backend.choice(content, rule, question, criteria);
+        } catch (IOException e) {
+            Map<String, Object> d = new LinkedHashMap<String, Object>();
+            d.put("task", task == Task.ADD ? "add" : "search");
+            d.put("node", node.name);
+            d.put("question", question);
+            d.put("criteria", criteria);
+            d.put("error", String.valueOf(e.getMessage()));
+            traceLlm("llm.decision", "choice 判定失败 @ " + node.name, d, null, t0);
+            throw e;
+        }
+        Map<String, Object> d = new LinkedHashMap<String, Object>();
+        d.put("task", task == Task.ADD ? "add" : "search");
+        d.put("node", node.name);
+        d.put("question", question);
+        d.put("criteria", criteria);
+        d.put("probs", r.probs);
+        traceLlm("llm.decision", "choice 判定 @ " + node.name + "（" + criteria.size() + " 选项）", d, r, t0);
         steps.add(new Step(node.name, r));
         requests++;
         totalIn += r.inputTokens;
@@ -634,8 +747,8 @@ public final class SemQuestTree {
             // choice 检索同样先包查询角色框架（与 noul 共用 questQuery 模板）：缓存键/报告/节点直取均保持原始查询
             descendQuestChoice(root, ps.questQuery(query), matched, rep, ruleSearch, 1.0d);
         } else {
-            // 检索请求先包角色框架再下发：给判据检索框架里的「该查询」提供指代源（缓存键/报告/节点直取均保持原始查询）
-            descendQuest(root, ps.questQuery(query), matched, rep.steps, ruleSearch);
+            // 检索请求先包角色框架再下发：给判据检索框架里的「该查询」提供指代 源（缓存键/报告/节点直取均保持原始查询）
+            descendQuest(root, ps.questQuery(query), matched, rep, rep.steps, ruleSearch);
         }
 
         LinkedHashMap<Doc, LinkedHashSet<String>> via = new LinkedHashMap<Doc, LinkedHashSet<String>>();
@@ -652,10 +765,11 @@ public final class SemQuestTree {
         }
 
         // doc 级出检过滤：补齐判定链最后一环（叶命中 → 该叶哪条内容真正与查询相关，如「车」叶下只放行火车）。
-        // 跨命中叶去重后分批打包判定（每批一次调用），P(相关) ≥ docFilterGate 才保留；
-        // rule 用树级检索规则（过滤批次可能跨子树，节点级覆盖不展开——判据模板自带检索框架语义）。
+        // 跨命中叶去重后分批打包判定（每批一次调用），P(相关) ≥ docFilterGate  才保留；
+        // state 只带 content 不带 rule（rule=null，state() 省略键）——相关性框架全在判据模板（「doc」与 state 内容强相关）。
+        // 类目意图命中时跳过：子树全量即答案（模型已确认查询强包含节点判据全部内容），无需再过滤。
         LinkedHashMap<String, Double> docProbs = null;   // docId -> P(相关)；null = 未执行过滤（全保留）
-        if (docFilterOn && ps.docFilterCriterion != null && !via.isEmpty()) {
+        if (docFilterOn && ps.docFilterCriterion != null && !via.isEmpty() && rep.catScopeNode == null) {
             List<Doc> all = new ArrayList<Doc>(via.keySet());
             rep.docFilterTotal = all.size();
             if (all.size() > docFilterMaxDocs && !confirm) {
@@ -667,9 +781,15 @@ public final class SemQuestTree {
                     LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
                     for (Doc d : batch) {
                         qs.put(d.id, new NoulSpec(d.id, ps.docFilterCriterion(truncateForFilter(d.content)),
-                                null, ps.noulNoHan, ps.noulNoLatin));
+                                truncateForFilter(d.content), ps.noulNoHan, ps.noulNoLatin));
                     }
-                    NoulReply r = backend.docFilter(query, ruleSearch, qs);
+                    long t0 = System.currentTimeMillis();
+                    NoulReply r = backend.docFilter(query, null, qs);   // rule=null：state 不带 rule，只带 content
+                    Map<String, Object> d = new LinkedHashMap<String, Object>();
+                    d.put("query", clip(query));
+                    d.put("docs", Integer.valueOf(qs.size()));
+                    d.put("probs", r.probs);
+                    traceLlm("llm.docfilter", "doc 过滤判定 · " + qs.size() + " 条", d, r, t0);
                     rep.steps.add(new Step("DOC_FILTER", r));
                     synchronized (this) {   // 过滤判定与下行判定共用树账单（并发安全同 ask）
                         requests++;
@@ -699,11 +819,42 @@ public final class SemQuestTree {
             rep.ranked.add(new RankedDoc(e.getKey().id, s, e.getValue(), p == null ? 1.0d : p.doubleValue()));
             if (docProbs != null) rep.docFilterKept++;
         }
+        // 类目命中护栏：子树 doc 数超预算时不自动全量返回——confirmRequired 待确认（ranked 保持全量、不入缓存），
+        // 客户端确认后带 confirm=true 重发才放行；防误 yes 时一次吐出超大响应。
+        if (rep.catScopeNode != null && rep.catScopeDocs > catScopeMaxDocs && !confirm) {
+            rep.confirmRequired = true;
+        }
         if (!rep.confirmRequired && questCacheCap > 0) cachePut(query, rep);
         return rep;
     }
 
-    /** doc 原文截断：超过 docFilterMaxLen 取前缀加省略号（判据只求判定相关性，防长文撑爆单批）。 */
+    /** 子树全部真实叶（含兜底叶——其落位内容也是该类目的一部分）入 matched；返回收集叶数。 */
+    private static int collectLeaves(SemNode node, LinkedHashSet<SemNode> matched) {
+        if (node.isLeaf()) {
+            matched.add(node);
+            return 1;
+        }
+        int n = 0;
+        for (SemNode c : node.children) n += collectLeaves(c, matched);
+        if (node.otherLeaf != null) {
+            matched.add(node.otherLeaf);
+            n++;
+        }
+        return n;
+    }
+
+    /** 类目意图截断组配置热载应用；任一值变化即清查询缓存（截断口径变了旧报告不可信）并返回 true。
+     *  实际生效还须 Prompts.catScopeCriterion 模板就位（未配置即禁用）。 */
+    public boolean setQuestCatScope(boolean on, double gate, int maxDocs) {
+        boolean changed = catScopeOn != on || questCatGate != gate || catScopeMaxDocs != maxDocs;
+        catScopeOn = on;
+        questCatGate = Math.min(1.0d, Math.max(0.0d, gate));
+        catScopeMaxDocs = Math.max(1, maxDocs);
+        if (changed) bustQuestCache();
+        return changed;
+    }
+
+    /** doc 原文截断：超过 docFilterMaxLen 取前缀加省略号（判据只求判定相关性， 防长文撑爆单批）。 */
     private String truncateForFilter(String content) {
         if (content == null) return "";
         String c = content.trim();
@@ -724,7 +875,7 @@ public final class SemQuestTree {
     }
 
     private void descendQuest(SemNode node, String query, LinkedHashSet<SemNode> matched,
-                              List<Step> steps, String rule) throws IOException {
+                              QuestReport rep, List<Step> steps, String rule) throws IOException {
         if (node.isLeaf()) {
             matched.add(node);
             return;
@@ -732,21 +883,58 @@ public final class SemQuestTree {
         final Prompts ps = promptsOrThrow();
         final String effRule = node.ruleSearch != null ? node.ruleSearch : rule;   // 子树规则覆盖
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
+        // 每层每个子节点双题同请求：有关系判定（原下探判定）+ 完全包含判定（__cat.<名>）——
+        // 「查询所寻找的内容是否强包含该子节点判据囊括的全部内容」。第一步（ROOT 层）就能触发：
+        // 任一子节点 P(包含) ≥ questCatGate → 直接收编该子节点子树全量返回（关系低也拦不住），
+        // 省掉下探一层的往返时延与后续判定/docFilter；P(包含) 低但关系过门 → 正常下探，行为与现状一致。
+        boolean catProbe = catScopeOn && ps.catScopeCriterion != null;
         for (SemNode c : node.children) {   // 兜底叶不参与检索
-            // 判据包检索框架（search 侧模板）：框架落在模型读的判据字段里，泛查询才能过机制描述型判据
-            qs.put(c.name, new NoulSpec(ps.noulInstructions(Task.SEARCH, c.name), ps.criterion(Task.SEARCH, c.yes, c.name), null, ps.noulNoHan, ps.noulNoLatin));
+            // search 判据 = searchCriterion 模板包裹属性解释（卑微姿态：沾边即 算）；no 判据对裸属性解释现场推导
+            qs.put(c.name, new NoulSpec(ps.noulInstructions(Task.SEARCH, c.name), ps.criterion(Task.SEARCH, c.add, c.name),
+                    c.add, ps.noulNoHan, ps.noulNoLatin));
+            if (catProbe) {
+                qs.put(CAT_PREFIX + c.name, new NoulSpec(c.name, ps.catScopeCriterion(query, c.add),
+                        c.add, ps.noulNoHan, ps.noulNoLatin));
+            }
         }
-        NoulReply r = ask(node.name, query, effRule, qs, steps);
+        NoulReply r = ask("search", node.name, query, effRule, qs, steps);
+        // 完全包含优先：命中子节点直接收编（可多个，多标签语义），不再下探任何分支
+        if (catProbe) {
+            List<SemNode> catHits = new ArrayList<SemNode>();
+            for (SemNode c : node.children) {
+                Double cp = r.probs.get(CAT_PREFIX + c.name);
+                if (cp != null && cp >= questCatGate) catHits.add(c);
+            }
+            if (!catHits.isEmpty()) {
+                int n = 0;
+                StringBuilder names = new StringBuilder();
+                for (SemNode c : catHits) {
+                    n += collectLeaves(c, matched);
+                    if (names.length() > 0) names.append("、");
+                    names.append(c.name);
+                }
+                rep.catScopeNode = names.toString();
+                rep.catScopeDocs = n;
+                Map<String, Object> d = new LinkedHashMap<String, Object>();
+                d.put("node", names.toString());
+                d.put("query", clip(query));
+                d.put("gate", Double.valueOf(questCatGate));
+                d.put("docs", Integer.valueOf(n));
+                Trace.record(traceTag, "act.catscope", "类目意图命中 @ " + names
+                        + " · 全量返回 " + n + " 条（不下探不过滤）", d, null, null, 0, 0, 0);
+                return;
+            }
+        }
         boolean any = false;
         for (SemNode c : node.children) {
             Double p = r.probs.get(c.name);
-            if (p != null && p >= gate) {
+            if (p != null && p >= questGate) {
                 any = true;
-                descendQuest(c, query, matched, steps, effRule);
+                descendQuest(c, query, matched, rep, steps, effRule);
             }
         }
         if (!any && node.otherLeaf != null) {
-            matched.add(node.otherLeaf);   // 与落位镜像：本层无真实判据过门 → 命中该层兜底叶（add 同条件落位）
+            matched.add(node.otherLeaf);   // 与落位镜像：本层无真实判据过门 →  命中该层兜底叶（add 同条件落位）
         }
     }
 
@@ -844,16 +1032,28 @@ public final class SemQuestTree {
         return ruleSearch;
     }
 
-    /** 运行时调整门控（0 < gate ≤ 1），只影响其后的 add / quest / grow 判定，不重排已落位数据。 */
-    public void setGate(double g) {
-        if (!(g > 0 && g <= 1)) throw new IllegalArgumentException("门控须在 (0, 1] 区间: " + g);
-        this.gate = g;
+    /** 运行时调整落位门控（0 < addGate ≤ 1），只影响其后的 add / grow 判定，不重排已落位数据。 */
+    public void setAddGate(double g) {
+        if (!(g > 0 && g <= 1)) throw new IllegalArgumentException("落位门控须在 (0, 1] 区间: " + g);
+        this.addGate = g;
         bustQuestCache();   // 门变了，缓存结果与重跑慢路不再一致
     }
 
-    /** 当前门控值（热载线程读取比对用）。 */
-    public double gate() {
-        return gate;
+    /** 当前落位门控值（热载线程读取比对用）。 */
+    public double addGate() {
+        return addGate;
+    }
+
+    /** 运行时调整检索门控（0 < questGate ≤ 1），只影响其后的 quest 判定。 */
+    public void setQuestGate(double g) {
+        if (!(g > 0 && g <= 1)) throw new IllegalArgumentException("检索门控须在 (0, 1] 区间: " + g);
+        this.questGate = g;
+        bustQuestCache();
+    }
+
+    /** 当前检索门控值。 */
+    public double questGate() {
+        return questGate;
     }
 
     /** 运行时调整 choice 采纳线（0 < choiceGate ≤ 1），只影响其后的判定。 */
@@ -925,12 +1125,13 @@ public final class SemQuestTree {
         return out;
     }
 
-    /** 全局元信息：后端 / 模式 / 门控 / 采纳线 / 落位总数。 */
+    /** 全局元信息：后端 / 模式 / 双门控 / 采纳线 / 落位总数。 */
     public Map<String, Object> metaMap() {
         LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
         m.put("backend", backend != null ? backend.name() : "(未接)");
         m.put("mode", choiceMode ? "choice" : "noul");
-        m.put("noulGate", gate);
+        m.put("addGate", addGate);
+        m.put("questGate", questGate);
         m.put("choiceGate", choiceGate);
         m.put("docCount", docIndex.size());
         return m;
@@ -956,19 +1157,19 @@ public final class SemQuestTree {
         m.put("name", n.name);
         m.put("leaf", n.isLeaf());
         m.put("other", n.other);
-        if (n.yes != null) m.put("yes", n.yes);
-        if (n.no != null) m.put("no", n.no);
+        if (n.add != null) m.put("add", n.add);
+        if (n.dim > 0) m.put("dim", round3(n.dim));   // 展示统一三位小数
         m.put("docCount", n.docs.size());
         return m;
     }
 
-    /** 层结构速览（生长编排用）：指定节点的真实子分支清单，每项 {name, yes 判据（空回名字）}；节点不存在返回 null。 */
+    /** 层结构速览（生长编排用）：指定节点的真实子分支清单，每项 {name, add 属性解释（空回名字）}；节点不存在返回 null。 */
     public List<String[]> branchView(String nodeName) {
         SemNode n = find(root, nodeName);
         if (n == null) return null;
         List<String[]> out = new ArrayList<String[]>();
         for (SemNode c : n.children) {
-            out.add(new String[]{c.name, c.yes == null || c.yes.trim().isEmpty() ? c.name : c.yes});
+            out.add(new String[]{c.name, c.add == null || c.add.trim().isEmpty() ? c.name : c.add});
         }
         return out;
     }
@@ -978,7 +1179,8 @@ public final class SemQuestTree {
         LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
         m.put("backend", backend != null ? backend.name() : "(未接)");
         m.put("mode", choiceMode ? "choice" : "noul");
-        m.put("noulGate", gate);
+        m.put("addGate", addGate);
+        m.put("questGate", questGate);
         m.put("choiceGate", choiceGate);
         m.put("docCount", docIndex.size());
         m.put("root", nodeMap(root));
@@ -989,7 +1191,8 @@ public final class SemQuestTree {
     public Map<String, Object> schemaMap() {
         LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
         m.put("mode", choiceMode ? "choice" : "noul");
-        m.put("noulGate", gate);
+        m.put("addGate", addGate);
+        m.put("questGate", questGate);
         m.put("choiceGate", choiceGate);
         m.put("ruleAdd", ruleAdd);
         m.put("ruleSearch", ruleSearch);
@@ -1000,8 +1203,8 @@ public final class SemQuestTree {
     private Map<String, Object> schemaNode(SemNode n) {
         LinkedHashMap<String, Object> m = new LinkedHashMap<String, Object>();
         m.put("name", n.name);
-        if (n.yes != null) m.put("yes", n.yes);
-        if (n.no != null) m.put("no", n.no);
+        if (n.add != null) m.put("add", n.add);
+        if (n.dim > 0) m.put("dim", round3(n.dim));   // 展示统一三位小数
         if (n.ruleAdd != null) m.put("ruleAdd", n.ruleAdd);
         if (n.ruleSearch != null) m.put("ruleSearch", n.ruleSearch);
         List<Object> children = new ArrayList<Object>();
@@ -1023,8 +1226,8 @@ public final class SemQuestTree {
         m.put("leaf", n.isLeaf());
         m.put("other", n.other);
         m.put("path", path);
-        if (n.yes != null) m.put("yes", n.yes);
-        if (n.no != null) m.put("no", n.no);
+        if (n.add != null) m.put("add", n.add);
+        if (n.dim > 0) m.put("dim", round3(n.dim));   // 展示统一三位小数
         List<Object> docs = new ArrayList<Object>();
         for (Doc d : n.docs) {
             LinkedHashMap<String, Object> dm = new LinkedHashMap<String, Object>();
@@ -1073,7 +1276,7 @@ public final class SemQuestTree {
 
     /**
      * 节点直取报告：指定节点的子树内全部叶的落位内容（叶与内部节点通用）。
-     * 文档按叶 DFS 顺序去重（一 Doc 多叶只出一次）；兜底叶内容包含在内，viaLeaves 露出 X_OTHER 后缀可辨。
+     * 文档按x叶 DFS 顺序去重（一 Doc 多叶只出一次）；兜底叶内容包含在内，viaLeaves 露出 X_OTHER 后缀可辨。
      */
     public static final class NodeDocs {
         public final String node;
@@ -1155,11 +1358,13 @@ public final class SemQuestTree {
 
     // ── 增长：补层 + 存量回填 ───────────────────────────────────────
 
-    /** 增长报告：新判据下受影响存量的逐条重判结果。 */
+    /** 增长报告：新判据下受影响存量的逐条重判结果。dimProb = 维度 score 题（首条重判请求顺带；
+     * choice 链/父判据空为 null——维度验收降级放行）。 */
     public static final class GrowReport {
         public final String parent;
         public final String node;
         public final List<Move> moves = new ArrayList<Move>();
+        public Double dimProb;
 
         GrowReport(String parent, String node) {
             this.parent = parent;
@@ -1181,13 +1386,13 @@ public final class SemQuestTree {
     }
 
     /** 纯结构增长（零模型调用）：在 parent 下追加判断节点；回放持久化增长记录用。 */
-    public SemNode addNode(String parent, String name, String yes, String no) {
+    public SemNode addNode(String parent, String name, String add) {
         SemNode p = find(root, parent);
         if (p == null) throw new IllegalArgumentException("父节点不存在: " + parent);
         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("节点名不可为空");
         String trimmed = name.trim();
         if (find(root, trimmed) != null) throw new IllegalArgumentException("节点名已存在: " + trimmed);
-        SemNode n = new SemNode(trimmed, yes, no, false, new ArrayList<SemNode>());
+        SemNode n = new SemNode(trimmed, add, false, new ArrayList<SemNode>());
         p.children.add(n);
         otherLeaf(p);   // 首个实子节点落地即生成兜底叶：choice 每层请求恒含兜底选项，UI 同步可见
         return n;
@@ -1195,21 +1400,18 @@ public final class SemQuestTree {
 
     /**
      * 补层增长 + 挂靠回填：新增判断节点后，把受影响存量逐条重判（每条 1 次请求）：
-     * noul——父为内部节点 → 重判其兜底叶存量，P(yes)≥门迁入新叶（挪出兜底），不过留兜底；
+     * noul——父为内部节点 → 重判其兜底叶存量，P(yes)≥落位门控迁入新叶（挪出兜底），不过留兜底；
      * 父为叶（分化）→ 该叶全部正文重判，过门进新叶，不过进新建兜底叶。
      * choice——新增节点=父层新选项，受影响存量对父层整题（全部选项+兜底）重选，
-     * 选中新选项且达采纳线迁入，否则留/落兜底。no 判据留空时自动生成（仅 noul）。
+     * 选中新选项且达采纳线迁入，否则留/落兜底。add 判据为属性解释；no 判据由 no 模板现场推导（仅 noul）。
      */
-    public GrowReport growNode(String parent, String name, String yes, String no) throws IOException {
-        final Prompts ps = promptsOrThrow();   // no 侧自动生成需要模板（prompt.noul.no.* 提示词文件）
+    public GrowReport growNode(String parent, String name, String add) throws IOException {
         bustQuestCache();   // 结构变了，查询缓存全部作废
-        if (!choiceMode && (yes == null || yes.trim().isEmpty())) {
-            throw new IllegalArgumentException("yes 判据不可为空");
+        if (!choiceMode && (add == null || add.trim().isEmpty())) {
+            throw new IllegalArgumentException("add 判据（属性解释）不可为空");
         }
-        String yesT = yes != null ? yes.trim() : "";
-        String noT = choiceMode
-                ? (no != null && !no.trim().isEmpty() ? no.trim() : null)          // choice：no 无意义不造
-                : (no != null && !no.trim().isEmpty() ? no.trim() : NoulSpec.autoNo(yesT, ps.noulNoHan, ps.noulNoLatin));
+        long t0Grow = System.currentTimeMillis();   // 动作流：生长验收（存量重判）整体耗时
+        String addT = add != null ? add.trim() : "";
         SemNode p = find(root, parent);
         if (p == null) throw new IllegalArgumentException("父节点不存在: " + parent);
         String effRule = effectiveRuleOf(p);   // 父所在子树若有规则覆盖（如中文子树），重判沿用它
@@ -1217,7 +1419,7 @@ public final class SemQuestTree {
         boolean differentiate = p.isLeaf();
         List<Doc> affected = new ArrayList<Doc>(differentiate ? p.docs
                 : (p.otherLeaf != null ? p.otherLeaf.docs : new ArrayList<Doc>()));
-        SemNode target = addNode(parent, name, yesT.isEmpty() ? null : yesT, noT);
+        SemNode target = addNode(parent, name, addT.isEmpty() ? null : addT);
         GrowReport rep = new GrowReport(parent, target.name);
 
         if (choiceMode) {
@@ -1243,14 +1445,19 @@ public final class SemQuestTree {
                 }   // 非分化且未过：留在兜底叶（指针未动）
                 rep.moves.add(new Move(d.id, pick != null ? pick.prob : 0.0d, pass));
             }
+            traceRejudge(rep, parent, addT, affected.size(), t0Grow);
             return rep;
         }
 
         if (differentiate) {
             SemNode other = otherLeaf(p);
+            NoulSpec dimSpec = dimSpecOf(addT, p.add);   // 维度 score 题并入首条重判请求（一次请求双任务）
             for (Doc d : affected) {
-                double prob = judgeOne(d.content, target.name, yesT, noT, effRule);
-                boolean pass = prob >= gate;
+                JudgeReply jr = judgeOne(d.content, target.name, addT, dimSpec);
+                if (rep.dimProb == null) rep.dimProb = jr.dimProb;   // 首条顺带的维度分
+                dimSpec = null;   // 仅首条带维度题，后续重判不再重复
+                double prob = jr.prob;
+                boolean pass = prob >= addGate;
                 p.docs.remove(d);
                 d.leaves.remove(p.name);
                 if (pass) {
@@ -1264,9 +1471,13 @@ public final class SemQuestTree {
             }
         } else {
             SemNode other = p.otherLeaf;   // 兜底存量存在则必已建
+            NoulSpec dimSpec = dimSpecOf(addT, p.add);
             for (Doc d : affected) {
-                double prob = judgeOne(d.content, target.name, yesT, noT, effRule);
-                if (prob >= gate) {
+                JudgeReply jr = judgeOne(d.content, target.name, addT, dimSpec);
+                if (rep.dimProb == null) rep.dimProb = jr.dimProb;
+                dimSpec = null;
+                double prob = jr.prob;
+                if (prob >= addGate) {
                     other.docs.remove(d);
                     d.leaves.remove(other.name);
                     target.docs.add(d);
@@ -1277,7 +1488,28 @@ public final class SemQuestTree {
                 }
             }
         }
+        traceRejudge(rep, parent, addT, affected.size(), t0Grow);
         return rep;
+    }
+
+    /** 追踪埋点：存量重判验收动作（act.rejudge，生长收编第一测）——逐条 P 值与移动结果。 */
+    private void traceRejudge(GrowReport rep, String parent, String addT, int affectedN, long t0) {
+        Map<String, Object> d = new LinkedHashMap<String, Object>();
+        d.put("parent", parent);
+        d.put("node", rep.node);
+        d.put("add", addT);
+        d.put("affected", Integer.valueOf(affectedN));
+        List<Map<String, Object>> mv = new ArrayList<Map<String, Object>>();
+        for (Move m : rep.moves) {
+            Map<String, Object> mm = new LinkedHashMap<String, Object>();
+            mm.put("docId", m.docId);
+            mm.put("prob", Double.valueOf(m.prob));
+            mm.put("moved", Boolean.valueOf(m.moved));
+            mv.add(mm);
+        }
+        d.put("moves", mv);
+        Trace.record(traceTag, "act.rejudge", "存量重判验收 · " + rep.moves.size() + " 条",
+                d, null, null, 0, 0, System.currentTimeMillis() - t0);
     }
 
     /**
@@ -1315,6 +1547,13 @@ public final class SemQuestTree {
         if (toLeaf && p.otherLeaf != null && p.otherLeaf.docs.isEmpty()) {
             p.otherLeaf = null;   // 分化新建的空兜底叶连带撤掉，父层回叶形态
         }
+        Map<String, Object> d = new LinkedHashMap<String, Object>();
+        d.put("parent", parentName);
+        d.put("node", nodeName);
+        d.put("restored", Integer.valueOf(back.size()));
+        d.put("toLeaf", Boolean.valueOf(toLeaf));
+        Trace.record(traceTag, "act.rollback", "生长回滚 · " + nodeName + "（还原 " + back.size() + " 条）",
+                d, null, null, 0, 0, 0);
     }
 
     /** 从 n 子树内的各叶上摘下 doc（含兜底叶；叶内指针与 doc 叶名指针双向清除）。 */
@@ -1333,17 +1572,17 @@ public final class SemQuestTree {
     /** 延伸准备快照（表锁内调用）：延伸串行闭环每一轮的输入——目标含义、现有子分支、存量样本与待重判清单。 */
     public static final class ExtendPlan {
         public final String node;              // 延伸目标节点名
-        public final String parentYes;         // 目标节点判据（子类的公共上限，生成提示词 {parentYes}）
+        public final String parentAdd;         // 目标节点属性解释（子类的公共上限，生成提示词 {parentAdd}）
         public final int totalDocs;            // 待整理存量条数
-        public final List<String[]> siblings;  // 现有子分支 {name, yes}（互斥基准，可能为空）
+        public final List<String[]> siblings;  // 现有子分支 {name, add}（互斥基准，可能为空）
         public final List<String> samples;     // 存量均匀抽样（内容概述，生成器输入）
         public final List<String[]> affected;  // 全量待重判存量 {id, content}
         public final String rule;              // 有效 add 规则（重判沿用）
 
-        ExtendPlan(String node, String parentYes, int totalDocs, List<String[]> siblings,
+        ExtendPlan(String node, String parentAdd, int totalDocs, List<String[]> siblings,
                    List<String> samples, List<String[]> affected, String rule) {
             this.node = node;
-            this.parentYes = parentYes;
+            this.parentAdd = parentAdd;
             this.totalDocs = totalDocs;
             this.siblings = siblings;
             this.samples = samples;
@@ -1373,9 +1612,9 @@ public final class SemQuestTree {
         }
         List<String[]> siblings = new ArrayList<String[]>();
         for (SemNode c : n.children) {
-            siblings.add(new String[]{c.name, c.yes == null || c.yes.trim().isEmpty() ? c.name : c.yes});
+            siblings.add(new String[]{c.name, c.add == null || c.add.trim().isEmpty() ? c.name : c.add});
         }
-        return new ExtendPlan(n.name, n.yes == null ? "" : n.yes, affected.size(),
+        return new ExtendPlan(n.name, n.add == null ? "" : n.add, affected.size(),
                 siblings, samples, affected, effectiveRuleOf(n));
     }
 
@@ -1400,7 +1639,7 @@ public final class SemQuestTree {
         if (d == null) return false;
         boolean fromLeaf = p.docs.contains(d);
         if (!fromLeaf && (p.otherLeaf == null || !p.otherLeaf.docs.contains(d))) return false;
-        if (prob >= gate) {
+        if (prob >= addGate) {   // 延伸迁移过落位门控（与 growNode 存量重判同口径）
             if (fromLeaf) {
                 p.docs.remove(d);
                 d.leaves.remove(p.name);
@@ -1434,14 +1673,70 @@ public final class SemQuestTree {
     }
 
     /**
-     * 单题重判（增长回填与延伸编排用），计入账单。规则取父子树的有效规则（有覆盖用覆盖，无则全局）。
-     * 纯参数化不读树结构：延伸编排可在表锁外调用，账单累加同步保证并发安全。
+     * 单题重判结果：prob=目标节点 P(yes)；dimProb=维度 score 题期望分（未带维度题或 refusal 时 null）。
      */
-    public double judgeOne(String content, String name, String yes, String no, String rule) throws IOException {
+    public static final class JudgeReply {
+        public final double prob;
+        public final Double dimProb;
+
+        JudgeReply(double prob, Double dimProb) {
+            this.prob = prob;
+            this.dimProb = dimProb;
+        }
+    }
+
+    /** 维度 score 题组装：只要求新枝判据非空（ROOT 层生长无父基准也照样打分存档，供后续作父基准）；
+     * 判据空（choice 链）返回 null（维度题缺席 → 验收降级放行）。 */
+    private NoulSpec dimSpecOf(String childAdd, String parentAdd) throws IOException {
+        if (childAdd == null || childAdd.trim().isEmpty()) return null;
+        return promptsOrThrow().dimSpec(childAdd);
+    }
+
+    /** score 期望分统一保留三位小数（维度分展示/存档/比较共用精度）。 */
+    private static double round3(double v) {
+        return Math.round(v * 1000.0d) / 1000.0d;
+    }
+
+    /**
+     * 单题重判（增长回填与延伸编排用），计入账单。存量验收请求无 state（rule/content 均不带）：
+     * 被判内容拼入题目（addCriterion 模板中的「这条内容」替换为内容原文），全是 question。
+     * add 判据=属性解释，add 判据模板包裹、no 判据模板现场推导。纯参数化不读树结构：
+     * 延伸编排可在表锁外调用，账单累加同步保证并发安全。
+     *
+     * @param dimSpec 维度 score 题（非 null 时同一请求附加一道 __dim__ 题，score 期望分=新枝判据维度分；
+     *                null=不带）
+     */
+    public JudgeReply judgeOne(String content, String name, String add,
+                               NoulSpec dimSpec) throws IOException {
         final Prompts ps = promptsOrThrow();
         LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
-        qs.put(name, new NoulSpec(ps.noulInstructions(Task.ADD, name), ps.addCriterion(yes, name), no, ps.noulNoHan, ps.noulNoLatin));
-        NoulReply r = backend.noul(content, rule, qs);
+        qs.put(name, new NoulSpec(ps.noulInstructions(Task.ADD, name), ps.rejudgeCriterion(add, name, content),
+                add, ps.noulNoHan, ps.noulNoLatin));
+        if (dimSpec != null) qs.put("__dim__", dimSpec);
+        long t0 = System.currentTimeMillis();
+        NoulReply r;
+        try {
+            r = backend.noul(null, null, qs);   // 无 state：内容已拼入题目，rule 不用于存量验收
+        } catch (IOException e) {
+            Map<String, Object> d = new LinkedHashMap<String, Object>();
+            d.put("task", "rejudge");
+            d.put("node", name);
+            d.put("content", clip(content));
+            d.put("questions", qsDetail(qs));
+            d.put("error", String.valueOf(e.getMessage()));
+            traceLlm("llm.decision", "存量重判失败 @ " + name, d, null, t0);
+            throw e;
+        }
+        Map<String, Object> d = new LinkedHashMap<String, Object>();
+        d.put("task", "rejudge");
+        d.put("node", name);
+        d.put("content", clip(content));
+        d.put("questions", qsDetail(qs));
+        Double pv0 = r.probs.get(name);
+        d.put("prob", pv0 == null ? Double.valueOf(0.0d) : pv0);
+        if (dimSpec != null && r.probs.get("__dim__") != null)
+            d.put("dim", round3(r.probs.get("__dim__")));   // 同请求顺带的维度 score 期望分（三位小数）
+        traceLlm("llm.decision", "存量重判 @ " + name, d, r, t0);
         synchronized (this) {   // 延伸线程在表锁外调用：账单计数并发安全
             requests++;
             totalIn += r.inputTokens;
@@ -1450,17 +1745,65 @@ public final class SemQuestTree {
             totalCost += r.cost;
         }
         Double p = r.probs.get(name);
-        return p == null ? 0.0d : p.doubleValue();
+        Double dp = dimSpec == null ? null : r.probs.get("__dim__");
+        return new JudgeReply(p == null ? 0.0d : p.doubleValue(), dp == null ? null : round3(dp));
+    }
+
+    /**
+     * 维度双题打分（延伸链验收用）：一次决策请求两道 score 题（父判据 + 子判据各一题，共用 state、
+     * 无 rule——维度打分无判定规则语义），score 期望分即维度分（0~5 精确小数，方向一致：分数越高粒度越细）。
+     * 题目不含对判据的递进约束，child > parent 由调用方完成。计入账单，表锁外可调。
+     *
+     * @return double[]{parentDim, childDim}
+     */
+    public double[] judgeDimPair(String parentAdd, String childAdd) throws IOException {
+        final Prompts ps = promptsOrThrow();
+        LinkedHashMap<String, NoulSpec> qs = new LinkedHashMap<String, NoulSpec>();
+        qs.put("q_parent", ps.dimSpec(parentAdd));
+        qs.put("q_child", ps.dimSpec(childAdd));
+        long t0 = System.currentTimeMillis();
+        NoulReply r;
+        try {
+            r = backend.noul(parentAdd == null ? "" : parentAdd, null, qs);   // state 不带 rule
+        } catch (IOException e) {
+            Map<String, Object> d = new LinkedHashMap<String, Object>();
+            d.put("task", "dim");
+            d.put("parent", clip(parentAdd));
+            d.put("child", clip(childAdd));
+            d.put("questions", qsDetail(qs));
+            d.put("error", String.valueOf(e.getMessage()));
+            traceLlm("llm.decision", "维度打分失败", d, null, t0);
+            throw e;
+        }
+        Double pd = r.probs.get("q_parent");
+        Double cd = r.probs.get("q_child");
+        double pdv = pd == null ? 0.0d : round3(pd);
+        double cdv = cd == null ? 0.0d : round3(cd);
+        Map<String, Object> d = new LinkedHashMap<String, Object>();
+        d.put("task", "dim");
+        d.put("parent", clip(parentAdd));
+        d.put("child", clip(childAdd));
+        d.put("questions", qsDetail(qs));
+        d.put("parentDim", pdv);
+        d.put("childDim", cdv);
+        traceLlm("llm.decision", "维度打分（延伸验收） → 父 " + pdv + " / 子 " + cdv, d, r, t0);
+        synchronized (this) {
+            requests++;
+            totalIn += r.inputTokens;
+            totalOut += r.outputTokens;
+            totalLatency += r.latencyMs;
+            totalCost += r.cost;
+        }
+        return new double[]{pdv, cdv};
     }
 
     // ── 修改节点：改名 + 判据编辑（零模型调用） ─────────────────────
 
-    /** 修改报告：旧名 / 新名 / 生效判据 / 父节点名（可视化刷新用）。 */
+    /** 修改报告：旧名 / 新名 / 生效属性解释 / 父节点名（可视化刷新用）。 */
     public static final class EditReport {
         public final String oldName;
         public String newName;
-        public String yes;
-        public String no;
+        public String add;
         public String parent;
 
         EditReport(String oldName) {
@@ -1470,13 +1813,12 @@ public final class SemQuestTree {
     }
 
     /**
-     * 修改节点：改名与 yes/no 判据编辑，零模型调用。
+     * 修改节点：改名与 add 判据（属性解释）编辑，零模型调用。
      * 叶改名连带更新其上落位 Doc 的叶指针；内部节点改名连带重命名其已创建的兜底叶（含指针）。
      * 改判据不重判已落位数据（判据语义变了，落位由后续 add/quest 自然收正或 --reseed 重跑）。
-     * yes 缺省视为不改；no 留空且 yes 有新值时按语言自动生成否定侧。
+     * no 判据由 no 模板现场推导，不存储、不可编辑。
      */
-    public EditReport editNode(String name, String newName, String yes, String no) {
-        final Prompts ps = promptsOrThrow();   // no 侧自动生成需要模板（prompt.noul.no.* 提示词文件）
+    public EditReport editNode(String name, String newName, String add) {
         bustQuestCache();   // 判据/名字变了，缓存结果与重跑慢路不再一致
         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("节点名不可为空");
         if (root.name.equals(name.trim())) throw new IllegalArgumentException("根节点不可修改");
@@ -1509,18 +1851,10 @@ public final class SemQuestTree {
                 }
             }
         }
-        if (yes != null && !yes.trim().isEmpty()) {
-            n.yes = yes.trim();
-            if (choiceMode) {
-                n.no = (no == null || no.trim().isEmpty()) ? null : no.trim();   // choice：选项描述，no 不用
-            } else {
-                n.no = (no == null || no.trim().isEmpty()) ? NoulSpec.autoNo(n.yes, ps.noulNoHan, ps.noulNoLatin) : no.trim();
-            }
-        } else if (no != null && !no.trim().isEmpty()) {
-            n.no = no.trim();   // 只改 no
+        if (add != null && !add.trim().isEmpty()) {
+            n.add = add.trim();
         }
-        rep.yes = n.yes;
-        rep.no = n.no;
+        rep.add = n.add;
         return rep;
     }
 
@@ -1597,9 +1931,69 @@ public final class SemQuestTree {
 
     // ── 内部 ────────────────────────────────────────────────────────
 
-    private NoulReply ask(String nodeName, String content, String rule,
+    /** 动作流归属表 id 回填（SemQuestServer 建表/迁移时调用）。 */
+    public void setTraceTag(String tableId) {
+        this.traceTag = tableId;
+    }
+
+    /** noul 问题规格 → detail 键值（每分支：判据文本 + 短指令；完整 req/resp 体在事件外层）。 */
+    private static Map<String, Object> qsDetail(LinkedHashMap<String, NoulSpec> qs) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        for (Map.Entry<String, NoulSpec> en : qs.entrySet()) {
+            Map<String, Object> q = new LinkedHashMap<String, Object>();
+            q.put("criterion", en.getValue().yes);
+            q.put("instructions", en.getValue().instructions);
+            if (en.getValue().scoreCriteria != null) {
+                q.put("type", "score");
+                q.put("criteria", en.getValue().scoreCriteria);   // score 题展示档位选项
+            } else {
+                q.put("no", en.getValue().no);
+            }
+            out.put(en.getKey(), q);
+        }
+        return out;
+    }
+
+    /** 内容/查询文本截断（detail 用；完整原文在 act.add / act.quest 事件 detail 里也截断，防动作流单条过大）。 */
+    private static String clip(String s) {
+        if (s == null) return "";
+        return s.length() > 120 ? s.substring(0, 120) + "…" : s;
+    }
+
+    /** 追踪埋点：模型调用事件（llm.*）。req/resp 体取自 Http.LAST_POST 线程捕获；r 为 null 表示调用失败。 */
+    private void traceLlm(String type, String title, Map<String, Object> detail,
+                          NoulReply r, long t0) {
+        String[] cap = Http.LAST_POST.get();
+        Trace.record(traceTag, type, title, detail,
+                cap == null ? null : cap[1], cap == null ? null : cap[2],
+                r == null ? 0 : r.inputTokens, r == null ? 0 : r.outputTokens,
+                System.currentTimeMillis() - t0);
+    }
+
+    private NoulReply ask(String taskName, String nodeName, String content, String rule,
                           LinkedHashMap<String, NoulSpec> qs, List<Step> steps) throws IOException {
-        NoulReply r = backend.noul(content, rule, qs);
+        long t0 = System.currentTimeMillis();
+        NoulReply r;
+        try {
+            r = backend.noul(content, rule, qs);
+        } catch (IOException e) {
+            Map<String, Object> detail = new LinkedHashMap<String, Object>();
+            detail.put("task", taskName);
+            detail.put("node", nodeName);
+            detail.put("content", clip(content));
+            detail.put("questions", qsDetail(qs));
+            detail.put("error", String.valueOf(e.getMessage()));
+            traceLlm("llm.decision", taskName + " 判定失败 @ " + nodeName, detail, null, t0);
+            throw e;
+        }
+        Map<String, Object> detail = new LinkedHashMap<String, Object>();
+        detail.put("task", taskName);
+        detail.put("node", nodeName);
+        detail.put("content", clip(content));
+        detail.put("questions", qsDetail(qs));
+        detail.put("probs", r.probs);
+        traceLlm("llm.decision", taskName + " 批量判定 @ " + nodeName
+                + "（" + qs.size() + " 题）", detail, r, t0);
         steps.add(new Step(nodeName, r));
         requests++;
         totalIn += r.inputTokens;
@@ -1609,10 +2003,10 @@ public final class SemQuestTree {
         return r;
     }
 
-    /** 内部节点的兜底叶（懒创建）。不参与判定请求，故无判据（yes/no 置 null，可视化不展示）。 */
+    /** 内部节点的兜底叶（懒创建）。不参与判定请求，故无判据（add 置 null，可视化不展示）。 */
     private SemNode otherLeaf(SemNode node) {
         if (node.otherLeaf == null) {
-            node.otherLeaf = new SemNode(node.name + OTHER_SUFFIX, null, null, true,
+            node.otherLeaf = new SemNode(node.name + OTHER_SUFFIX, null, true,
                     new ArrayList<SemNode>());
         }
         return node.otherLeaf;
@@ -1643,6 +2037,65 @@ public final class SemQuestTree {
         return n != null && n.isLeaf() ? n : null;
     }
 
+    // ── 维度存取（生长验收打分回存；不影响判定路径） ────────────────
+
+    /** 节点维度分（0=未评；0~5，越低越宽泛越高越细致，统一保留三位小数）。节点不存在返回 0。 */
+    public double dimOf(String nodeName) {
+        SemNode n = nodeName == null ? null : find(root, nodeName.trim());
+        return n == null || n.dim <= 0 ? 0.0d : round3(n.dim);   // 历史满精度存档读取时也归一三位
+    }
+
+    /** 写入节点维度分（统一三位小数；不影响判定路径，不清查询缓存；生长/延伸验收通过后回存，重启回放零模型恢复）。 */
+    public void setDim(String nodeName, double dim) {
+        SemNode n = nodeName == null ? null : find(root, nodeName.trim());
+        if (n == null) throw new IllegalArgumentException("节点不存在: " + nodeName);
+        n.dim = Math.min(5.0d, Math.max(0.0d, round3(dim)));
+    }
+
+    /** 读节点属性解释（无此节点或未配置回 null；ROOT 判据为 null）。供生长语境包取父判据。 */
+    public String nodeAdd(String nodeName) {
+        SemNode n = nodeName == null ? null : find(root, nodeName.trim());
+        return n == null ? null : n.add;
+    }
+
+    // ── 落位指针一致性（悬空自愈） ─────────────────────────────────
+
+    /** 一条悬空指针：docId + 指向已不存在节点的叶名。 */
+    public static final class DanglingLeaf {
+        public final String docId;
+        public final String leaf;
+
+        DanglingLeaf(String docId, String leaf) {
+            this.docId = docId;
+            this.leaf = leaf;
+        }
+    }
+
+    /**
+     * 悬空叶指针清单（零模型调用）：doc.leaves 里 find 不可达的叶名。
+     * 成因：异常中断把落位中间态固化进快照 / 旧版回放对缺失叶静默跳过——载入后校验自愈用。
+     */
+    public List<DanglingLeaf> danglingLeaves() {
+        List<DanglingLeaf> out = new ArrayList<DanglingLeaf>();
+        for (Doc d : docIndex.values()) {
+            for (String ln : d.leaves) {
+                if (find(root, ln) == null) out.add(new DanglingLeaf(d.id, ln));
+            }
+        }
+        return out;
+    }
+
+    /** 摘除全部悬空叶指针（自愈，零模型调用），返回摘除清单；无悬空返回空表。 */
+    public List<DanglingLeaf> detachDanglingLeaves() {
+        List<DanglingLeaf> out = danglingLeaves();
+        if (out.isEmpty()) return out;
+        for (DanglingLeaf d : out) {
+            Doc doc = docIndex.get(d.docId);
+            if (doc != null) doc.leaves.remove(d.leaf);
+        }
+        return out;
+    }
+
     /** 递归为所有内部节点预创建兜底叶（持久化载入后 find/findPath 可达）。 */
     private void ensureOthers(SemNode n) {
         if (n.isLeaf()) return;
@@ -1668,8 +2121,8 @@ public final class SemQuestTree {
         m.put("name", n.name);
         m.put("leaf", n.isLeaf());
         m.put("other", n.other);
-        if (n.yes != null) m.put("yes", n.yes);
-        if (n.no != null) m.put("no", n.no);
+        if (n.add != null) m.put("add", n.add);
+        if (n.dim > 0) m.put("dim", round3(n.dim));   // 展示统一三位小数
         m.put("docCount", n.docs.size());
         List<Object> children = new ArrayList<Object>();
         for (SemNode c : n.children) children.add(nodeMap(c));
